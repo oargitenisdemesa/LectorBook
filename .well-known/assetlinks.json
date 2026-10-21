@@ -1,8 +1,0 @@
-[{
-      "relation": ["delegate_permission/common.handle_all_urls"],
-      "target": {
-        "namespace": "android_app",
-        "package_name": "io.github.oargitenisdemesa.twa",
-        "sha256_cert_fingerprints": ["C7:65:7D:DF:10:33:76:BF:6E:1D:28:D0:5A:5B:D4:F6:74:DD:2E:38:48:C5:23:8C:93:28:4B:40:FD:72:53:6E"]
-      }
-    }]
