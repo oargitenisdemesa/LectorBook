@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14110f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Lector Book">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Lector Book</title>
+<style>
+:root{--bg:#14110f;--card:#211c19;--card2:#2d2723;--line:#3a322d;--text:#f4ede6;--muted:#a99c91;--accent:#f5a623;--danger:#ef5350;color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding-top:env(safe-area-inset-top)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+svg{fill:currentColor;display:block}
+
+header{position:sticky;top:0;z-index:5;background:linear-gradient(var(--bg) 85%,transparent);padding:14px 16px 10px}
+.top{display:flex;align-items:center;gap:10px}
+h1{font-size:23px;margin:0;flex:1;letter-spacing:-.4px}
+h1 span{color:var(--accent)}
+.btn{background:var(--accent);color:#1a1209;font-weight:700;padding:10px 16px;border-radius:999px}
+.btn.ghost{background:var(--card2);color:var(--text);font-weight:600}
+.btn.wide{width:100%;padding:14px;margin-top:6px;border-radius:14px}
+.btn.danger{background:#3a1f1e;color:#ff8a80}
+.search{width:100%;margin-top:12px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit;outline:none}
+.search:focus{border-color:var(--accent)}
+.chips{display:flex;gap:8px;margin-top:10px;overflow-x:auto;scrollbar-width:none}
+.chip{padding:7px 14px;border-radius:999px;background:var(--card);color:var(--muted);white-space:nowrap;font-size:14px}
+.chip.on{background:var(--text);color:var(--bg);font-weight:600}
+
+main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:18px 14px}
+.card{text-align:left;display:block;width:100%}
+.cover{aspect-ratio:1;border-radius:12px;overflow:hidden;position:relative;box-shadow:0 6px 18px #0007;width:100%}
+.cover img{width:100%;height:100%;object-fit:cover;display:block}
+.cover .ph{position:absolute;inset:0;padding:12px;display:flex;align-items:flex-end;font-weight:800;font-size:15px;line-height:1.15;color:#fff;text-shadow:0 1px 6px #0008;word-break:break-word}
+.card .t{margin-top:9px;font-weight:600;font-size:14px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .a{color:var(--muted);font-size:12.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:4px;background:var(--line);border-radius:4px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:4px}
+.card .p{font-size:11.5px;color:var(--muted);margin-top:5px}
+.empty{text-align:center;color:var(--muted);padding:70px 24px;line-height:1.5}
+.empty b{display:block;color:var(--text);font-size:19px;margin-bottom:8px}
+.empty .btn{margin-top:18px}
+.empty small{display:block;margin-top:22px;font-size:12.5px;opacity:.8}
+
+#mini{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:8;background:var(--card2);border-radius:16px;box-shadow:0 8px 28px #000a;overflow:hidden}
+#mini .in{display:flex;align-items:center;gap:12px;padding:8px 10px}
+#mini .th{width:46px;height:46px;flex:none}
+#mini .th .cover{border-radius:8px;box-shadow:none}
+#mini .th .ph{font-size:8px;padding:4px}
+#mini .tx{flex:1;min-width:0;text-align:left}
+#mini .tx b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mini .tx span{font-size:12px;color:var(--muted)}
+#mini .pp{width:44px;height:44px;border-radius:50%;background:var(--text);color:var(--bg);display:grid;place-items:center;flex:none}
+#mini .pp svg{width:24px;height:24px}
+#mini .mb{height:3px;background:var(--line)}
+#mini .mb i{display:block;height:100%;background:var(--accent);width:0}
+
+#player{position:fixed;inset:0;z-index:20;background:linear-gradient(180deg,#2a211b,var(--bg) 60%);transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:calc(12px + env(safe-area-inset-top)) 22px calc(18px + env(safe-area-inset-bottom));overflow-y:auto}
+#player.open{transform:none}
+.pTop{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:13px;letter-spacing:.5px;text-transform:uppercase}
+.pTop button{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;color:var(--text)}
+.pTop svg{width:26px;height:26px}
+.pCover{width:min(78vw,360px,42vh);margin:10px auto 0;flex:none}
+.pCover .cover{border-radius:16px;box-shadow:0 18px 50px #000b}
+.pInfo{text-align:center;margin-top:20px}
+.pInfo h2{margin:0;font-size:21px;line-height:1.2}
+.pInfo p{margin:5px 0 0;color:var(--muted);font-size:15px}
+.pInfo small{display:block;margin-top:6px;color:var(--accent);font-size:12.5px}
+.seek{margin-top:18px}
+#pSeek{width:100%;accent-color:var(--accent);height:28px;margin:0}
+.times{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ctrl{display:flex;align-items:center;justify-content:space-between;margin-top:10px}
+.ctrl button{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;color:var(--text)}
+.ctrl button:active{background:var(--card2)}
+.ctrl svg{width:30px;height:30px}
+.ctrl .skip{flex-direction:column;font-size:22px;line-height:1}
+.ctrl .skip small{font-size:11px;font-weight:700;margin-top:-4px}
+.ctrl .play{width:74px;height:74px;background:var(--accent);color:#1a1209}
+.ctrl .play:active{background:#e0961a}
+.ctrl .play svg{width:38px;height:38px}
+.row2{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;justify-content:center}
+.pill{background:var(--card2);padding:10px 16px;border-radius:999px;font-size:14px;font-weight:600}
+.pill.on{background:var(--accent);color:#1a1209}
+.tot{text-align:center;color:var(--muted);font-size:12.5px;margin-top:16px}
+
+#sheetWrap{position:fixed;inset:0;z-index:40;visibility:hidden}
+#sheetWrap.open{visibility:visible}
+.scrim{position:absolute;inset:0;background:#000a;opacity:0;transition:opacity .25s}
+#sheetWrap.open .scrim{opacity:1}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:82vh;background:var(--card);border-radius:22px 22px 0 0;padding:16px 18px calc(22px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .28s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column}
+#sheetWrap.open .sheet{transform:none}
+.sheetHead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sheetHead b{font-size:17px}
+.sheetHead button{width:38px;height:38px;border-radius:50%;background:var(--card2)}
+#sheetBody{overflow-y:auto}
+.li{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:13px 4px;border-bottom:1px solid var(--line)}
+.li:last-child{border-bottom:0}
+.li .n{flex:1;min-width:0}
+.li .n b{display:block;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .n span{font-size:12.5px;color:var(--muted)}
+.li.on .n b{color:var(--accent)}
+.li .x{color:var(--muted);width:36px;height:36px;border-radius:50%;display:grid;place-items:center}
+.opts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.opts button{background:var(--card2);padding:14px 6px;border-radius:12px;font-weight:600}
+.opts button.on{background:var(--accent);color:#1a1209}
+.f{display:block;margin-bottom:14px;font-size:13px;color:var(--muted)}
+.f input:not([type=file]){display:block;width:100%;margin-top:6px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit;outline:none}
+.f input[type=file]{display:block;margin-top:6px;width:100%;color:var(--text);font-size:14px}
+.hint{color:var(--muted);font-size:13px;min-height:18px;margin:0 0 6px}
+.addrow{display:flex;gap:8px;margin-bottom:8px}
+.addrow input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit;outline:none;min-width:0}
+.mkEmpty{color:var(--muted);text-align:center;padding:22px 0;font-size:14px}
+
+#toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:60;max-width:88vw;text-align:center}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top">
+    <h1>Lector <span>Book</span></h1>
+    <button id="install" class="btn ghost" hidden>Instalar</button>
+    <button id="addBtn" class="btn">+ Añadir</button>
+  </div>
+  <input class="search" id="q" type="search" placeholder="Buscar por título o autor">
+  <div class="chips" id="chips">
+    <button class="chip on" data-f="all">Todos</button>
+    <button class="chip" data-f="doing">Escuchando</button>
+    <button class="chip" data-f="done">Terminados</button>
+  </div>
+</header>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden></div>
+</main>
+
+<div id="mini" hidden>
+  <div class="in">
+    <button class="th" id="mThumb" aria-label="Abrir reproductor"></button>
+    <button class="tx" id="mText" aria-label="Abrir reproductor"><b id="mTitle"></b><span id="mSub"></span></button>
+    <button class="pp" id="mPlay" aria-label="Reproducir o pausar"></button>
+  </div>
+  <div class="mb"><i id="mBar"></i></div>
+</div>
+
+<section id="player" aria-hidden="true">
+  <div class="pTop">
+    <button id="pClose" aria-label="Cerrar reproductor"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
+    <span>Reproduciendo</span>
+    <button id="pMore" aria-label="Más opciones"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+  </div>
+  <div class="pCover" id="pCover"></div>
+  <div class="pInfo"><h2 id="pTitle"></h2><p id="pAuthor"></p><small id="pTrack"></small></div>
+  <div class="seek">
+    <input type="range" id="pSeek" min="0" max="100" value="0" step="1" aria-label="Posición">
+    <div class="times"><span id="pCur">0:00</span><span id="pLeft">-0:00</span></div>
+  </div>
+  <div class="ctrl">
+    <button id="pPrev" aria-label="Pista anterior"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+    <button id="pBack" class="skip" aria-label="Retroceder 15 segundos"><span>↺</span><small>15</small></button>
+    <button id="pPlay" class="play" aria-label="Reproducir o pausar"></button>
+    <button id="pFwd" class="skip" aria-label="Avanzar 30 segundos"><span>↻</span><small>30</small></button>
+    <button id="pNext" aria-label="Pista siguiente"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6zM16 6h2v12h-2z"/></svg></button>
+  </div>
+  <div class="row2">
+    <button id="bSpeed" class="pill">1.0×</button>
+    <button id="bSleep" class="pill">Dormir</button>
+    <button id="bMarks" class="pill">Marcadores</button>
+    <button id="bTracks" class="pill">Pistas</button>
+  </div>
+  <div class="tot" id="pTotal"></div>
+</section>
+
+<div id="sheetWrap">
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet">
+    <div class="sheetHead"><b id="sheetTitle"></b><button id="sheetX" aria-label="Cerrar">✕</button></div>
+    <div id="sheetBody"></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ---------- utilidades ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const fmt = s => {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
+};
+const fmtLeft = s => {
+  s = Math.max(0, Math.round(s / 60));
+  const h = Math.floor(s / 60), m = s % 60;
+  return h ? `${h} h ${m} min` : `${m} min`;
+};
+const hue = t => { let h = 0; for (const c of String(t)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const I = {
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>'
+};
+let toastT;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+/* ---------- base de datos (IndexedDB) ---------- */
+let db;
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('lectorbook', 1);
+    r.onupgradeneeded = () => {
+      r.result.createObjectStore('books', { keyPath: 'id' });
+      r.result.createObjectStore('files');
+    };
+    r.onsuccess = () => { db = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });
+}
+const store = (n, m = 'readonly') => db.transaction(n, m).objectStore(n);
+const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const dbPut = (n, v, k) => req(k === undefined ? store(n, 'readwrite').put(v) : store(n, 'readwrite').put(v, k));
+const dbGet = (n, k) => req(store(n).get(k));
+const dbAll = n => req(store(n).getAll());
+const dbDel = (n, k) => req(store(n, 'readwrite').delete(k));
+
+/* ---------- estado ---------- */
+let books = [], filter = 'all', query = '';
+let cur = null, loadedId = null, curUrl = null;
+let sleep = null, sleepTimer = null, dragging = false, lastSave = 0;
+const coverUrls = {};
+const audio = new Audio();
+audio.preload = 'auto';
+
+const total = b => b.tracks.reduce((s, t) => s + (t.duration || 0), 0);
+const elapsed = b => b.tracks.slice(0, b.pos.track).reduce((s, t) => s + (t.duration || 0), 0) + (b.pos.time || 0);
+const prog = b => b.finished ? 1 : (total(b) ? Math.min(1, elapsed(b) / total(b)) : 0);
+const lastBook = () => books.filter(b => b.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed)[0] || null;
+
+function coverUrl(b) {
+  if (!b.cover) return null;
+  return coverUrls[b.id] || (coverUrls[b.id] = URL.createObjectURL(b.cover));
+}
+function coverHTML(b) {
+  const u = coverUrl(b), h = hue(b.title);
+  return `<div class="cover" style="background:linear-gradient(135deg,hsl(${h} 70% 46%),hsl(${(h + 50) % 360} 70% 27%))">` +
+    (u ? `<img src="${u}" alt="">` : `<div class="ph">${esc(b.title)}</div>`) + '</div>';
+}
+
+/* ---------- biblioteca ---------- */
+function renderLibrary() {
+  let list = books.slice().sort((a, b) => (b.lastPlayed || b.added) - (a.lastPlayed || a.added));
+  const q = query.trim().toLowerCase();
+  if (q) list = list.filter(b => (b.title + ' ' + b.author).toLowerCase().includes(q));
+  if (filter === 'doing') list = list.filter(b => !b.finished && prog(b) > 0);
+  if (filter === 'done') list = list.filter(b => b.finished);
+  const grid = $('#grid'), empty = $('#empty');
+  if (!books.length) {
+    grid.innerHTML = '';
+    empty.hidden = false;
+    empty.innerHTML = `<b>Tu biblioteca está vacía</b>Añade tus audiolibros desde tu dispositivo.<br>Quedan guardados en este navegador y funcionan sin conexión.<br><button class="btn" id="emptyAdd">+ Añadir audiolibro</button><small>En iPhone: pulsa Compartir y «Añadir a pantalla de inicio» para instalarla.</small>`;
+    $('#emptyAdd').onclick = openAdd;
+    return;
+  }
+  if (!list.length) {
+    grid.innerHTML = '';
+    empty.hidden = false;
+    empty.innerHTML = '<b>Nada por aquí</b>No hay libros que coincidan.';
+    return;
+  }
+  empty.hidden = true;
+  grid.innerHTML = list.map(b => {
+    const p = prog(b);
+    const status = b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
+    return `<button class="card" data-id="${b.id}">${coverHTML(b)}
+      <div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || 'Autor desconocido')}</div>
+      <div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><div class="p">${status}</div></button>`;
+  }).join('');
+}
+function renderMini() {
+  const mini = $('#mini');
+  if (!cur || $('#player').classList.contains('open')) { mini.hidden = true; return; }
+  mini.hidden = false;
+  $('#mThumb').innerHTML = coverHTML(cur);
+  $('#mTitle').textContent = cur.title;
+  $('#mSub').textContent = cur.author || `Pista ${cur.pos.track + 1} de ${cur.tracks.length}`;
+  $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
+  updatePlay();
+}
+function renderAll() { renderLibrary(); renderMini(); }
+
+$('#grid').addEventListener('click', e => {
+  const c = e.target.closest('.card'); if (c) openBook(c.dataset.id, { play: true });
+});
+$('#chips').addEventListener('click', e => {
+  const c = e.target.closest('.chip'); if (!c) return;
+  filter = c.dataset.f;
+  document.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === c));
+  renderLibrary();
+});
+$('#q').addEventListener('input', e => { query = e.target.value; renderLibrary(); });
+$('#addBtn').onclick = openAdd;
+
+/* ---------- hojas inferiores ---------- */
+function sheet(title, html, mount) {
+  $('#sheetTitle').textContent = title;
+  $('#sheetBody').innerHTML = html;
+  $('#sheetWrap').classList.add('open');
+  if (mount) mount($('#sheetBody'));
+}
+function closeSheet() { $('#sheetWrap').classList.remove('open'); }
+$('#sheetX').onclick = closeSheet;
+$('#scrim').onclick = closeSheet;
+
+/* ---------- añadir libro ---------- */
+function getDuration(blob) {
+  return new Promise(res => {
+    const a = new Audio(), u = URL.createObjectURL(blob);
+    const done = d => { URL.revokeObjectURL(u); res(isFinite(d) ? d : 0); };
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => done(a.duration);
+    a.onerror = () => done(0);
+    a.src = u;
+  });
+}
+function openAdd() {
+  sheet('Añadir audiolibro', `
+    <label class="f">Archivos de audio (puedes elegir varios, en orden)
+      <input id="fAudio" type="file" accept="audio/*,.mp3,.m4a,.m4b,.aac,.ogg,.wav,.flac" multiple></label>
+    <label class="f">Título<input id="fTitle" placeholder="Título del libro"></label>
+    <label class="f">Autor<input id="fAuthor" placeholder="Autor (opcional)"></label>
+    <label class="f">Portada (opcional)<input id="fCover" type="file" accept="image/*"></label>
+    <p class="hint" id="fMsg"></p>
+    <button class="btn wide" id="fSave">Guardar en la biblioteca</button>`, body => {
+    const natural = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
+    $('#fAudio').onchange = () => {
+      const files = [...$('#fAudio').files].sort(natural);
+      if (files.length && !$('#fTitle').value) $('#fTitle').value = files[0].name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+      $('#fMsg').textContent = files.length ? `${files.length} archivo(s) seleccionado(s)` : '';
+    };
+    $('#fSave').onclick = async () => {
+      const files = [...$('#fAudio').files].sort(natural);
+      if (!files.length) { $('#fMsg').textContent = 'Elige al menos un archivo de audio.'; return; }
+      const btn = $('#fSave'); btn.disabled = true;
+      const id = uid(), tracks = [];
+      try {
+        for (let i = 0; i < files.length; i++) {
+          $('#fMsg').textContent = `Guardando ${i + 1} de ${files.length}…`;
+          const duration = await getDuration(files[i]);
+          await dbPut('files', files[i], id + ':' + i);
+          tracks.push({ name: files[i].name.replace(/\.[^.]+$/, ''), duration });
+        }
+        const book = {
+          id, title: $('#fTitle').value.trim() || 'Sin título', author: $('#fAuthor').value.trim(),
+          cover: $('#fCover').files[0] || null, tracks, pos: { track: 0, time: 0 }, speed: 1,
+          bookmarks: [], added: Date.now(), lastPlayed: 0, finished: false
+        };
+        await dbPut('books', book);
+        books.push(book);
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+        closeSheet(); renderAll(); toast('Libro añadido');
+      } catch (err) {
+        for (let i = 0; i < files.length; i++) dbDel('files', id + ':' + i).catch(() => {});
+        $('#fMsg').textContent = 'No se pudo guardar (¿poco espacio?). Prueba con menos archivos.';
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
+/* ---------- reproducción ---------- */
+async function loadTrack(i, t = 0) {
+  const blob = await dbGet('files', cur.id + ':' + i);
+  if (!blob) { toast('Falta el archivo de audio'); return false; }
+  if (curUrl) URL.revokeObjectURL(curUrl);
+  curUrl = URL.createObjectURL(blob);
+  audio.src = curUrl;
+  cur.pos.track = i;
+  await new Promise(r => {
+    audio.addEventListener('loadedmetadata', r, { once: true });
+    audio.addEventListener('error', r, { once: true });
+    audio.load();
+  });
+  audio.currentTime = Math.min(t, audio.duration || t);
+  audio.defaultPlaybackRate = audio.playbackRate = cur.speed || 1;
+  return true;
+}
+async function openBook(id, opts = {}) {
+  const { play = false, show = true } = opts;
+  const b = books.find(x => x.id === id); if (!b) return;
+  if (cur && cur.id !== id) await savePos();
+  cur = b;
+  if (show) showPlayer(true);
+  renderPlayer();
+  if (loadedId !== id) {
+    audio.pause();
+    loadedId = null;
+    if (b.finished && play) { b.finished = false; b.pos = { track: 0, time: 0 }; }
+    const ok = await loadTrack(b.pos.track || 0, b.pos.time || 0);
+    if (!ok) return;
+    loadedId = id;
+  }
+  setMediaSession();
+  if (play) await playAudio();
+  renderPlayer(); renderMini();
+}
+async function playAudio() {
+  if (!cur || loadedId !== cur.id) return;
+  if (cur.finished) { cur.finished = false; cur.pos = { track: 0, time: 0 }; await loadTrack(0, 0); renderPlayer(); }
+  try { await audio.play(); } catch (e) { /* el navegador pidió un toque del usuario */ }
+  cur.lastPlayed = Date.now();
+}
+async function togglePlay() {
+  if (!cur) return;
+  if (loadedId !== cur.id) { await openBook(cur.id, { play: true, show: false }); return; }
+  if (audio.paused) await playAudio(); else audio.pause();
+}
+async function savePos() {
+  if (!cur || loadedId !== cur.id) return;
+  cur.pos.time = audio.currentTime || 0;
+  try { await dbPut('books', cur); } catch (e) {}
+}
+function skip(d) {
+  if (!cur || loadedId !== cur.id) return;
+  const t = audio.currentTime + d, dur = audio.duration || 0;
+  if (t < 0) audio.currentTime = 0;
+  else if (dur && t >= dur) nextTrack(!audio.paused);
+  else audio.currentTime = t;
+}
+async function nextTrack(autoplay = true) {
+  if (!cur || loadedId !== cur.id) return;
+  if (cur.pos.track >= cur.tracks.length - 1) {
+    cur.finished = true; cur.pos.time = audio.duration || 0;
+    audio.pause(); await savePos(); renderAll(); renderPlayer(); return;
+  }
+  await loadTrack(cur.pos.track + 1, 0);
+  cur.pos.time = 0;
+  if (autoplay) { try { await audio.play(); } catch (e) {} }
+  await savePos(); renderPlayer();
+}
+async function prevTrack() {
+  if (!cur || loadedId !== cur.id) return;
+  if (audio.currentTime > 3 || cur.pos.track === 0) { audio.currentTime = 0; return; }
+  const was = !audio.paused;
+  await loadTrack(cur.pos.track - 1, 0);
+  cur.pos.time = 0;
+  if (was) { try { await audio.play(); } catch (e) {} }
+  await savePos(); renderPlayer();
+}
+async function jumpTo(track, time) {
+  if (!cur || loadedId !== cur.id) return;
+  const was = !audio.paused;
+  if (track !== cur.pos.track) await loadTrack(track, time); else audio.currentTime = time;
+  cur.pos.time = time;
+  try { await audio.play(); } catch (e) {}
+  renderPlayer();
+}
+
+audio.addEventListener('timeupdate', () => {
+  if (!cur || loadedId !== cur.id) return;
+  cur.pos.time = audio.currentTime;
+  updateTime();
+  if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); renderLibrary(); }
+});
+audio.addEventListener('durationchange', () => {
+  if (cur && loadedId === cur.id && isFinite(audio.duration) && audio.duration > 0) {
+    const tr = cur.tracks[cur.pos.track];
+    if (tr && Math.abs((tr.duration || 0) - audio.duration) > 1) { tr.duration = audio.duration; }
+    updateTime();
+  }
+});
+audio.addEventListener('play', updatePlay);
+audio.addEventListener('pause', () => { updatePlay(); savePos(); renderLibrary(); });
+audio.addEventListener('ended', () => {
+  if (sleep && sleep.endOfTrack) { setSleep(0); nextTrack(false); toast('Temporizador: fin de la pista'); }
+  else nextTrack(true);
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
+addEventListener('pagehide', savePos);
+
+/* ---------- interfaz del reproductor ---------- */
+function showPlayer(v) {
+  $('#player').classList.toggle('open', v);
+  $('#player').setAttribute('aria-hidden', String(!v));
+  renderMini();
+}
+function renderPlayer() {
+  if (!cur) return;
+  $('#pCover').innerHTML = coverHTML(cur);
+  $('#pTitle').textContent = cur.title;
+  $('#pAuthor').textContent = cur.author || '';
+  const tr = cur.tracks[cur.pos.track];
+  $('#pTrack').textContent = cur.tracks.length > 1 ? `Pista ${cur.pos.track + 1} de ${cur.tracks.length} · ${tr ? tr.name : ''}` : '';
+  $('#bSpeed').textContent = (cur.speed || 1).toFixed(2).replace(/0$/, '') + '×';
+  $('#bSpeed').classList.toggle('on', (cur.speed || 1) !== 1);
+  $('#bMarks').textContent = 'Marcadores' + (cur.bookmarks.length ? ` (${cur.bookmarks.length})` : '');
+  $('#bTracks').hidden = cur.tracks.length < 2;
+  updateSleepLabel(); updateTime(); updatePlay();
+}
+function updateTime() {
+  if (!cur) return;
+  const active = loadedId === cur.id;
+  const t = active ? audio.currentTime : (cur.pos.time || 0);
+  const tr = cur.tracks[cur.pos.track];
+  const d = active && isFinite(audio.duration) && audio.duration ? audio.duration : (tr ? tr.duration : 0);
+  if (!dragging) { $('#pSeek').max = d || 100; $('#pSeek').value = t; }
+  $('#pCur').textContent = fmt(t);
+  $('#pLeft').textContent = '-' + fmt(Math.max(0, d - t));
+  const left = (total(cur) - elapsed(cur)) / (cur.speed || 1);
+  $('#pTotal').textContent = cur.finished ? 'Libro terminado' : total(cur) ? `Quedan ${fmtLeft(left)} del libro` : '';
+  $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
+}
+function updatePlay() {
+  const playing = !!cur && loadedId === cur.id && !audio.paused;
+  $('#pPlay').innerHTML = playing ? I.pause : I.play;
+  $('#mPlay').innerHTML = playing ? I.pause : I.play;
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+}
+$('#pPlay').onclick = togglePlay;
+$('#mPlay').onclick = togglePlay;
+$('#pBack').onclick = () => skip(-15);
+$('#pFwd').onclick = () => skip(30);
+$('#pPrev').onclick = prevTrack;
+$('#pNext').onclick = () => nextTrack(!audio.paused);
+$('#pClose').onclick = () => showPlayer(false);
+$('#mThumb').onclick = $('#mText').onclick = () => cur && openBook(cur.id, { play: false });
+const seek = $('#pSeek');
+seek.addEventListener('input', () => { dragging = true; $('#pCur').textContent = fmt(seek.value); });
+seek.addEventListener('change', () => {
+  if (cur && loadedId === cur.id) audio.currentTime = +seek.value;
+  dragging = false; savePos();
+});
+
+/* ---------- velocidad ---------- */
+$('#bSpeed').onclick = () => {
+  const speeds = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
+  sheet('Velocidad de reproducción', `<div class="opts">${speeds.map(s =>
+    `<button data-s="${s}" class="${(cur.speed || 1) === s ? 'on' : ''}">${s}×</button>`).join('')}</div>`, body => {
+    body.onclick = async e => {
+      const b = e.target.closest('button'); if (!b) return;
+      cur.speed = +b.dataset.s;
+      audio.defaultPlaybackRate = audio.playbackRate = cur.speed;
+      await dbPut('books', cur); closeSheet(); renderPlayer();
+    };
+  });
+};
+
+/* ---------- temporizador para dormir ---------- */
+function setSleep(min) {
+  clearInterval(sleepTimer); sleepTimer = null; sleep = null; audio.volume = 1;
+  if (min === 'track') sleep = { endOfTrack: true };
+  else if (min) { sleep = { end: Date.now() + min * 60000 }; sleepTimer = setInterval(sleepTick, 1000); }
+  updateSleepLabel();
+}
+function sleepTick() {
+  if (!sleep || !sleep.end) return;
+  const left = sleep.end - Date.now();
+  if (left <= 0) { audio.pause(); setSleep(0); toast('Temporizador: pausado. ¡Buenas noches!'); return; }
+  audio.volume = left < 10000 ? Math.max(0.05, left / 10000) : 1;
+  updateSleepLabel();
+}
+function updateSleepLabel() {
+  const b = $('#bSleep');
+  if (!sleep) { b.textContent = 'Dormir'; b.classList.remove('on'); return; }
+  b.classList.add('on');
+  b.textContent = sleep.endOfTrack ? 'Fin de pista' : fmtLeft(Math.max(0, (sleep.end - Date.now()) / 1000));
+}
+$('#bSleep').onclick = () => {
+  const opts = [[15, '15 min'], [30, '30 min'], [45, '45 min'], [60, '1 hora'], [90, '1,5 h'], ['track', 'Fin de pista']];
+  sheet('Temporizador para dormir', `<div class="opts">${opts.map(o => `<button data-m="${o[0]}">${o[1]}</button>`).join('')}</div>` +
+    (sleep ? '<button class="btn wide danger" id="sleepOff">Desactivar temporizador</button>' : ''), body => {
+    body.onclick = e => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.id === 'sleepOff') setSleep(0);
+      else { const m = b.dataset.m; setSleep(m === 'track' ? 'track' : +m); toast('Temporizador activado'); }
+      closeSheet();
+    };
+  });
+};
+
+/* ---------- marcadores ---------- */
+function renderMarks() {
+  const t = loadedId === cur.id ? audio.currentTime : cur.pos.time;
+  const list = cur.bookmarks.slice().sort((a, b) => a.track - b.track || a.time - b.time);
+  return `<div class="addrow"><input id="mkNote" placeholder="Nota (opcional)"><button class="btn" id="mkAdd">+ ${fmt(t)}</button></div>` +
+    (list.length ? list.map(m => `<div class="li"><button class="n" data-go="${m.id}"><b>${esc(m.note || 'Marcador')}</b>
+      <span>${cur.tracks.length > 1 ? 'Pista ' + (m.track + 1) + ' · ' : ''}${fmt(m.time)}</span></button>
+      <button class="x" data-del="${m.id}" aria-label="Borrar">✕</button></div>`).join('') : '<div class="mkEmpty">Aún no tienes marcadores en este libro.</div>');
+}
+$('#bMarks').onclick = () => {
+  const mount = body => {
+    body.onclick = async e => {
+      const add = e.target.closest('#mkAdd'), go = e.target.closest('[data-go]'), del = e.target.closest('[data-del]');
+      if (add) {
+        const t = loadedId === cur.id ? audio.currentTime : cur.pos.time;
+        cur.bookmarks.push({ id: uid(), track: cur.pos.track, time: t, note: $('#mkNote').value.trim(), at: Date.now() });
+        await dbPut('books', cur); renderPlayer();
+        $('#sheetBody').innerHTML = renderMarks(); toast('Marcador añadido');
+      } else if (go) {
+        const m = cur.bookmarks.find(x => x.id === go.dataset.go);
+        if (m) { closeSheet(); jumpTo(m.track, m.time); }
+      } else if (del) {
+        cur.bookmarks = cur.bookmarks.filter(x => x.id !== del.dataset.del);
+        await dbPut('books', cur); renderPlayer();
+        $('#sheetBody').innerHTML = renderMarks();
+      }
+    };
+  };
+  sheet('Marcadores', renderMarks(), mount);
+};
+
+/* ---------- lista de pistas ---------- */
+$('#bTracks').onclick = () => {
+  sheet('Pistas', cur.tracks.map((t, i) => `<button class="li ${i === cur.pos.track ? 'on' : ''}" data-i="${i}">
+    <div class="n"><b>${i + 1}. ${esc(t.name)}</b><span>${fmt(t.duration)}</span></div></button>`).join(''), body => {
+    body.onclick = e => {
+      const b = e.target.closest('[data-i]'); if (!b) return;
+      closeSheet(); jumpTo(+b.dataset.i, 0);
+    };
+  });
+};
+
+/* ---------- más opciones ---------- */
+$('#pMore').onclick = () => {
+  sheet('Opciones del libro', `
+    <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
+    <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
+    <button class="li" data-a="restart"><div class="n"><b>Empezar de nuevo</b></div></button>
+    <button class="li" data-a="done"><div class="n"><b>Marcar como terminado</b></div></button>
+    <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
+    body.onclick = e => {
+      const b = e.target.closest('[data-a]'); if (!b) return;
+      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook })[b.dataset.a]();
+    };
+  });
+};
+async function editBook() {
+  const t = prompt('Título', cur.title); if (t === null) return;
+  const a = prompt('Autor', cur.author || '');
+  cur.title = t.trim() || cur.title; if (a !== null) cur.author = a.trim();
+  await dbPut('books', cur); closeSheet(); renderAll(); renderPlayer(); setMediaSession();
+}
+function changeCover() {
+  const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*';
+  i.onchange = async () => {
+    const f = i.files[0]; if (!f) return;
+    if (coverUrls[cur.id]) { URL.revokeObjectURL(coverUrls[cur.id]); delete coverUrls[cur.id]; }
+    cur.cover = f; await dbPut('books', cur); closeSheet(); renderAll(); renderPlayer(); setMediaSession();
+  };
+  i.click();
+}
+async function restartBook() {
+  cur.finished = false; cur.pos = { track: 0, time: 0 };
+  if (loadedId === cur.id) await loadTrack(0, 0);
+  await dbPut('books', cur); closeSheet(); renderAll(); renderPlayer();
+}
+async function markDone() {
+  audio.pause(); cur.finished = true; await dbPut('books', cur); closeSheet(); renderAll(); renderPlayer();
+}
+async function deleteBook() {
+  if (!confirm(`¿Eliminar «${cur.title}» de la biblioteca? Se borrarán sus audios de este dispositivo.`)) return;
+  const b = cur;
+  audio.pause(); audio.removeAttribute('src'); audio.load(); loadedId = null;
+  if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
+  for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.id + ':' + i);
+  await dbDel('books', b.id);
+  books = books.filter(x => x.id !== b.id);
+  if (coverUrls[b.id]) { URL.revokeObjectURL(coverUrls[b.id]); delete coverUrls[b.id]; }
+  cur = lastBook(); closeSheet(); showPlayer(false); renderAll(); toast('Libro eliminado');
+}
+
+/* ---------- controles del sistema (pantalla de bloqueo) ---------- */
+function setMediaSession() {
+  if (!('mediaSession' in navigator) || !cur) return;
+  const u = coverUrl(cur);
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: cur.title, artist: cur.author || 'Lector Book', album: 'Lector Book',
+    artwork: u ? [{ src: u, sizes: '512x512', type: cur.cover.type || 'image/png' }] : [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }]
+  });
+  const h = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f); } catch (e) {} };
+  h('play', () => playAudio());
+  h('pause', () => audio.pause());
+  h('seekbackward', () => skip(-15));
+  h('seekforward', () => skip(30));
+  h('previoustrack', prevTrack);
+  h('nexttrack', () => nextTrack(!audio.paused));
+  h('seekto', d => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+}
+
+/* ---------- instalación y arranque ---------- */
+let deferredPrompt;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; $('#install').hidden = false; });
+$('#install').onclick = async () => {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt(); await deferredPrompt.userChoice;
+  deferredPrompt = null; $('#install').hidden = true;
+};
+addEventListener('appinstalled', () => { $('#install').hidden = true; });
+
+(async function init() {
+  try {
+    await openDB();
+    books = await dbAll('books');
+    books.forEach(b => { b.pos = b.pos || { track: 0, time: 0 }; b.bookmarks = b.bookmarks || []; b.speed = b.speed || 1; });
+    cur = lastBook();
+    renderAll();
+    if (cur) renderPlayer();
+  } catch (e) {
+    $('#empty').hidden = false;
+    $('#empty').innerHTML = '<b>No se pudo abrir el almacenamiento</b>Este navegador no permite guardar libros (¿modo privado?).';
+  }
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
