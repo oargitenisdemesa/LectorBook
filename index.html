@@ -119,6 +119,23 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .addrow input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit;outline:none;min-width:0}
 .mkEmpty{color:var(--muted);text-align:center;padding:22px 0;font-size:14px}
 
+#conv{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:6px 0 14px}
+#conv .r{display:flex;align-items:center;gap:10px}
+#conv .r b{flex:1;font-size:14px;min-width:0}
+#conv .r button{padding:8px 14px;font-size:13px}
+#conv .cb{height:5px;background:var(--line);border-radius:5px;margin-top:10px;overflow:hidden}
+#conv .cb i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+#conv small{display:block;color:var(--muted);margin-top:8px;font-size:12px}
+.sel{display:block;width:100%;margin-top:6px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit}
+.chl{max-height:30vh;overflow-y:auto;border:1px solid var(--line);border-radius:12px;margin:6px 0 14px}
+.chl label{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);font-size:14px;color:var(--text)}
+.chl label:last-child{border-bottom:0}
+.chl input{width:18px;height:18px;accent-color:var(--accent);flex:none}
+.chl span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chl em{font-style:normal;color:var(--muted);font-size:12px;flex:none}
+.lbl{font-size:13px;color:var(--muted)}
+.sum{color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.45}
+.btn.row{display:flex;gap:8px}
 #toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:60;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
@@ -140,6 +157,11 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 </header>
 
 <main>
+  <div id="conv" hidden>
+    <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button></div>
+    <div class="cb"><i id="convBar"></i></div>
+    <small>Mantén la aplicación abierta y la pantalla encendida mientras se convierte.</small>
+  </div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden></div>
 </main>
@@ -190,6 +212,8 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 </div>
 <div id="toast"></div>
 
+<script src="epub.js"></script>
+<script src="tts.js"></script>
 <script>
 'use strict';
 /* ---------- utilidades ---------- */
@@ -284,7 +308,8 @@ function renderLibrary() {
   empty.hidden = true;
   grid.innerHTML = list.map(b => {
     const p = prog(b);
-    const status = b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
+    const jb = b.job && b.job.next < b.job.chapters.length ? b.job : null;
+    const status = jb ? `${conv && conv.book === b ? 'Convirtiendo' : 'Conversión pausada'} · ${jb.next}/${jb.chapters.length}` : b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
     return `<button class="card" data-id="${b.id}">${coverHTML(b)}
       <div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || 'Autor desconocido')}</div>
       <div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><div class="p">${status}</div></button>`;
@@ -303,7 +328,14 @@ function renderMini() {
 function renderAll() { renderLibrary(); renderMini(); }
 
 $('#grid').addEventListener('click', e => {
-  const c = e.target.closest('.card'); if (c) openBook(c.dataset.id, { play: true });
+  const c = e.target.closest('.card'); if (!c) return;
+  const b = books.find(x => x.id === c.dataset.id);
+  if (b && !b.tracks.length) {
+    if (conv && conv.book === b) toast('Se está convirtiendo el primer capítulo…');
+    else if (confirm('Este libro aún no tiene audio. ¿Continuar la conversión?')) runJob(b);
+    return;
+  }
+  openBook(c.dataset.id, { play: true });
 });
 $('#chips').addEventListener('click', e => {
   const c = e.target.closest('.chip'); if (!c) return;
@@ -344,7 +376,9 @@ function openAdd() {
     <label class="f">Autor<input id="fAuthor" placeholder="Autor (opcional)"></label>
     <label class="f">Portada (opcional)<input id="fCover" type="file" accept="image/*"></label>
     <p class="hint" id="fMsg"></p>
-    <button class="btn wide" id="fSave">Guardar en la biblioteca</button>`, body => {
+    <button class="btn wide" id="fSave">Guardar en la biblioteca</button>
+    <button class="btn wide ghost" id="fEpub">Convertir un ePub en audiolibro</button>`, body => {
+    $('#fEpub').onclick = openEpub;
     const natural = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
     $('#fAudio').onchange = () => {
       const files = [...$('#fAudio').files].sort(natural);
@@ -635,7 +669,11 @@ $('#bTracks').onclick = () => {
 
 /* ---------- más opciones ---------- */
 $('#pMore').onclick = () => {
-  sheet('Opciones del libro', `
+  const jb = cur.job && cur.job.next < cur.job.chapters.length ? cur.job : null;
+  const running = conv && conv.book === cur;
+  const extra = running ? '<button class="li" data-a="stop"><div class="n"><b>Detener la conversión</b></div></button>'
+    : jb ? `<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b><span>${jb.next} de ${jb.chapters.length} capítulos hechos</span></div></button>` : '';
+  sheet('Opciones del libro', extra + `
     <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
     <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
     <button class="li" data-a="restart"><div class="n"><b>Empezar de nuevo</b></div></button>
@@ -643,7 +681,7 @@ $('#pMore').onclick = () => {
     <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
     body.onclick = e => {
       const b = e.target.closest('[data-a]'); if (!b) return;
-      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook })[b.dataset.a]();
+      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, stop: () => { closeSheet(); stopConv(); } })[b.dataset.a]();
     };
   });
 };
@@ -673,9 +711,11 @@ async function markDone() {
 async function deleteBook() {
   if (!confirm(`¿Eliminar «${cur.title}» de la biblioteca? Se borrarán sus audios de este dispositivo.`)) return;
   const b = cur;
+  if (conv && conv.book === b) conv.cancel = true;
   audio.pause(); audio.removeAttribute('src'); audio.load(); loadedId = null;
   if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
   for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.id + ':' + i);
+  await dbDel('files', b.id + ':epub').catch(() => {});
   await dbDel('books', b.id);
   books = books.filter(x => x.id !== b.id);
   if (coverUrls[b.id]) { URL.revokeObjectURL(coverUrls[b.id]); delete coverUrls[b.id]; }
@@ -700,6 +740,152 @@ function setMediaSession() {
   h('seekto', d => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
 }
 
+/* ---------- conversión de ePub a audio ---------- */
+let conv = null, wake = null;
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+function showConv(msg, frac) {
+  $('#conv').hidden = !conv;
+  if (msg != null) $('#convMsg').textContent = msg;
+  if (frac != null) $('#convBar').style.width = Math.round(frac * 100) + '%';
+}
+function stopConv() { if (conv) { conv.cancel = true; $('#convMsg').textContent = 'Deteniendo…'; } }
+$('#convStop').onclick = stopConv;
+async function keepAwake() {
+  try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (conv && !document.hidden) { wake = null; keepAwake(); } });
+
+async function runJob(book) {
+  if (conv) { toast('Ya hay una conversión en marcha'); return; }
+  const job = book.job;
+  conv = { book, cancel: false };
+  showConv('Preparando…', 0); renderLibrary();
+  await keepAwake();
+  let failed = 0;
+  try {
+    const file = await dbGet('files', book.id + ':epub');
+    if (!file) throw new Error('Falta el archivo ePub original.');
+    const epub = await Epub.open(file);
+    if (!(await Voice.isStored(job.voice))) {
+      showConv('Descargando la voz…', 0);
+      await Voice.download(job.voice, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
+    }
+    while (job.next < job.chapters.length && !conv.cancel) {
+      const ch = epub.chapters[job.chapters[job.next]];
+      const chunks = Epub.toChunks(ch.blocks);
+      const sink = await Voice.createSink();
+      const label = `Capítulo ${job.next + 1} de ${job.chapters.length}`;
+      for (let k = 0; k < chunks.length && !conv.cancel; k++) {
+        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (job.next + k / chunks.length) / job.chapters.length);
+        let r = null;
+        for (let t = 0; t < 2 && !r; t++) { try { r = await Voice.synth(chunks[k].text, job.voice); } catch (e) { if (t) failed++; } }
+        if (r) await sink.add(r.samples, r.rate);
+        await sink.silence(chunks[k].pause);
+      }
+      if (conv.cancel) break;
+      const out = await sink.finish();
+      if (conv.cancel) break;
+      await dbPut('files', out.blob, book.id + ':' + book.tracks.length);
+      book.tracks.push({ name: job.titles[job.next], duration: out.seconds });
+      job.next++;
+      await dbPut('books', book);
+      renderAll(); if (cur === book) renderPlayer();
+      if (job.next === 1) toast('Primer capítulo listo: ya puedes escucharlo');
+    }
+    if (job.next >= job.chapters.length) toast(failed ? `Libro terminado (${failed} frases no se pudieron leer)` : 'Libro convertido por completo');
+    else if (conv.cancel) toast('Conversión detenida. Puedes continuarla desde el libro.');
+  } catch (e) {
+    toast(String(e.message || e).slice(0, 140));
+  } finally {
+    conv = null; showConv(); renderLibrary();
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+  }
+}
+
+function openEpub() {
+  let epub = null;
+  sheet('ePub a audiolibro', `
+    <label class="f">Archivo ePub<input id="eFile" type="file" accept=".epub,application/epub+zip"></label>
+    <p class="hint" id="eMsg"></p>
+    <div id="eRest" hidden>
+      <label class="f">Título<input id="eTitle"></label>
+      <label class="f">Autor<input id="eAuthor"></label>
+      <div class="lbl">Capítulos a convertir</div><div class="chl" id="eList"></div>
+      <label class="f">Voz<select class="sel" id="eVoice"></select></label>
+      <p class="sum" id="eSum"></p>
+      <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
+      <button class="btn wide" id="eGo">Empezar la conversión</button>
+    </div>`, () => {
+    const fillVoices = async () => {
+      const list = await Voice.spanishVoices(), sel = $('#eVoice');
+      if (!sel) return;
+      const saved = lsGet('lb-voice');
+      sel.innerHTML = list.map(v => `<option value="${v.id}">${esc(v.label)}</option>`).join('');
+      if (saved && list.some(v => v.id === saved)) sel.value = saved;
+    };
+    const sum = () => {
+      const boxes = [...document.querySelectorAll('#eList input:checked')];
+      const chars = boxes.reduce((s, b) => s + epub.chapters[+b.value].chars, 0);
+      const min = chars / 900;
+      const mb = min * 60 * 4000 / 1e6 * 1.1;
+      $('#eSum').textContent = boxes.length
+        ? `${boxes.length} capítulos · unos ${fmtLeft(min * 60)} de audio · ocupará unos ${Math.max(1, Math.round(mb))} MB. La conversión puede tardar bastante más que la propia duración del libro; el primer capítulo estará listo enseguida.`
+        : 'Elige al menos un capítulo.';
+      $('#eGo').disabled = !boxes.length;
+    };
+    $('#eFile').onchange = async () => {
+      const f = $('#eFile').files[0]; if (!f) return;
+      $('#eMsg').textContent = 'Leyendo el libro…'; $('#eRest').hidden = true;
+      try {
+        epub = await Epub.open(f); epub.file = f;
+        const usable = epub.chapters.filter(c => c.chars > 0).length;
+        if (!usable) throw new Error('No se encontró texto en este ePub.');
+        $('#eTitle').value = epub.title; $('#eAuthor').value = epub.author;
+        $('#eList').innerHTML = epub.chapters.map((c, i) => c.chars > 0 ?
+          `<label><input type="checkbox" value="${i}" ${c.chars >= 600 ? 'checked' : ''}><span>${esc(c.title)}</span><em>${fmtLeft(c.chars / 900 * 60)}</em></label>` : '').join('');
+        $('#eList').onchange = sum;
+        $('#eMsg').textContent = ''; $('#eRest').hidden = false; sum(); fillVoices();
+      } catch (e) { $('#eMsg').textContent = String(e.message || e); }
+    };
+    $('#eTest').onclick = async () => {
+      const btn = $('#eTest'), id = $('#eVoice').value; btn.disabled = true;
+      try {
+        if (!(await Voice.isStored(id))) {
+          await Voice.download(id, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
+        }
+        btn.textContent = 'Generando…';
+        const r = await Voice.synth('Hola. Esta es la voz con la que se leerá tu libro. ¿Qué te parece?', id);
+        const ac = new (window.AudioContext || window.webkitAudioContext)(), buf = ac.createBuffer(1, r.samples.length, r.rate);
+        buf.copyToChannel(r.samples, 0);
+        const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start();
+      } catch (e) { toast(String(e.message || e).slice(0, 140)); }
+      btn.textContent = '▶ Probar la voz'; btn.disabled = false;
+    };
+    $('#eGo').onclick = async () => {
+      if (conv) { toast('Ya hay una conversión en marcha'); return; }
+      const picks = [...document.querySelectorAll('#eList input:checked')].map(b => +b.value);
+      if (!picks.length) return;
+      const voice = $('#eVoice').value || 'es_ES-davefx-medium';
+      lsSet('lb-voice', voice);
+      const id = uid();
+      const book = {
+        id, title: $('#eTitle').value.trim() || epub.title, author: $('#eAuthor').value.trim(), cover: epub.cover,
+        tracks: [], pos: { track: 0, time: 0 }, speed: 1, bookmarks: [], added: Date.now(), lastPlayed: 0, finished: false,
+        job: { voice, chapters: picks, titles: picks.map(i => epub.chapters[i].title), next: 0 }
+      };
+      try {
+        await dbPut('files', epub.file, id + ':epub');
+        await dbPut('books', book);
+      } catch (e) { toast('No hay espacio suficiente para guardar el libro.'); return; }
+      books.push(book);
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+      closeSheet(); renderAll(); runJob(book);
+    };
+  });
+}
+
 /* ---------- instalación y arranque ---------- */
 let deferredPrompt;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; $('#install').hidden = false; });
@@ -718,6 +904,7 @@ addEventListener('appinstalled', () => { $('#install').hidden = true; });
     cur = lastBook();
     renderAll();
     if (cur) renderPlayer();
+    if (books.some(b => b.job && b.job.next < b.job.chapters.length)) setTimeout(() => toast('Tienes una conversión sin terminar: ábrela y pulsa su libro'), 800);
   } catch (e) {
     $('#empty').hidden = false;
     $('#empty').innerHTML = '<b>No se pudo abrir el almacenamiento</b>Este navegador no permite guardar libros (¿modo privado?).';
