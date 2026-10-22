@@ -89,6 +89,11 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .row2{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;justify-content:center}
 .pill{background:var(--card2);padding:10px 16px;border-radius:999px;font-size:14px;font-weight:600}
 .pill.on{background:var(--accent);color:#1a1209}
+.bk{margin-top:12px}
+.bk .bar2{position:relative;height:6px;background:var(--line);border-radius:6px;overflow:hidden}
+.bk .bar2 i{display:block;height:100%;background:var(--accent);width:0}
+.bk .bar2 u{position:absolute;top:0;bottom:0;width:2px;background:var(--bg)}
+.bk .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:var(--muted);margin-top:6px;font-variant-numeric:tabular-nums}
 .tot{text-align:center;color:var(--muted);font-size:12.5px;margin-top:16px}
 
 #sheetWrap{position:fixed;inset:0;z-index:40;visibility:hidden}
@@ -186,6 +191,10 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
   <div class="seek">
     <input type="range" id="pSeek" min="0" max="100" value="0" step="1" aria-label="Posición">
     <div class="times"><span id="pCur">0:00</span><span id="pLeft">-0:00</span></div>
+  </div>
+  <div class="bk">
+    <div class="bar2" id="bkBar"><i id="bkFill"></i></div>
+    <div class="row"><span id="bkL"></span><span id="bkR"></span></div>
   </div>
   <div class="ctrl">
     <button id="pPrev" aria-label="Pista anterior"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
@@ -537,11 +546,14 @@ function renderPlayer() {
   $('#pTitle').textContent = cur.title;
   $('#pAuthor').textContent = cur.author || '';
   const tr = cur.tracks[cur.pos.track];
-  $('#pTrack').textContent = cur.tracks.length > 1 ? `Pista ${cur.pos.track + 1} de ${cur.tracks.length} · ${tr ? tr.name : ''}` : '';
+  $('#pTrack').textContent = cur.tracks.length > 1 ? `${cur.job ? 'Capítulo' : 'Pista'} ${cur.pos.track + 1} de ${cur.tracks.length} · ${tr ? tr.name : ''}` : '';
   $('#bSpeed').textContent = (cur.speed || 1).toFixed(2).replace(/0$/, '') + '×';
   $('#bSpeed').classList.toggle('on', (cur.speed || 1) !== 1);
   $('#bMarks').textContent = 'Marcadores' + (cur.bookmarks.length ? ` (${cur.bookmarks.length})` : '');
   $('#bTracks').hidden = cur.tracks.length < 2;
+  const tt = total(cur); let acc = 0;
+  $('#bkBar').querySelectorAll('u').forEach(e => e.remove());
+  if (tt) cur.tracks.slice(0, -1).forEach(t => { acc += t.duration || 0; const u = document.createElement('u'); u.style.left = (acc / tt * 100) + '%'; $('#bkBar').appendChild(u); });
   updateSleepLabel(); updateTime(); updatePlay();
 }
 function updateTime() {
@@ -556,6 +568,10 @@ function updateTime() {
   const left = (total(cur) - elapsed(cur)) / (cur.speed || 1);
   $('#pTotal').textContent = cur.finished ? 'Libro terminado' : total(cur) ? `Quedan ${fmtLeft(left)} del libro` : '';
   $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
+  const tt = total(cur), pr = prog(cur), n = cur.tracks.length;
+  $('#bkFill').style.width = (pr * 100).toFixed(1) + '%';
+  $('#bkL').textContent = (n > 1 ? `${cur.job ? 'Capítulo' : 'Pista'} ${cur.pos.track + 1} de ${n} · ` : '') + `${Math.round(pr * 100)}% del libro`;
+  $('#bkR').textContent = tt ? `${fmtLeft(cur.finished ? tt : elapsed(cur))} de ${fmtLeft(tt)}` : '';
 }
 function updatePlay() {
   const playing = !!cur && loadedId === cur.id && !audio.paused;
