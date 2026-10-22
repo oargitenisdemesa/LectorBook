@@ -165,7 +165,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
   <div id="conv" hidden>
     <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button></div>
     <div class="cb"><i id="convBar"></i></div>
-    <small>Mantén la aplicación abierta y la pantalla encendida mientras se convierte.</small>
+    <small>Puedes apagar la pantalla: la app intenta seguir convirtiendo. Si se interrumpe, continúa desde el libro.</small>
   </div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden></div>
@@ -317,8 +317,8 @@ function renderLibrary() {
   empty.hidden = true;
   grid.innerHTML = list.map(b => {
     const p = prog(b);
-    const jb = b.job && b.job.next < b.job.chapters.length ? b.job : null;
-    const status = jb ? `${conv && conv.book === b ? 'Convirtiendo' : 'Conversión pausada'} · ${jb.next}/${jb.chapters.length}` : b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
+    const jb = b.job && b.job.queue && b.job.queue.length ? b.job : null;
+    const status = jb ? `${conv && conv.book === b ? 'Convirtiendo' : 'Conversión pausada'} · ${b.tracks.length}/${jb.all.length} cap.` : b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
     return `<button class="card" data-id="${b.id}">${coverHTML(b)}
       <div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || 'Autor desconocido')}</div>
       <div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><div class="p">${status}</div></button>`;
@@ -341,7 +341,8 @@ $('#grid').addEventListener('click', e => {
   const b = books.find(x => x.id === c.dataset.id);
   if (b && !b.tracks.length) {
     if (conv && conv.book === b) toast('Se está convirtiendo el primer capítulo…');
-    else if (confirm('Este libro aún no tiene audio. ¿Continuar la conversión?')) runJob(b);
+    else if (b.job && b.job.queue && b.job.queue.length && confirm('Este libro aún no tiene audio. ¿Continuar la conversión?')) runJob(b);
+    else if (b.job && !(b.job.queue && b.job.queue.length)) openChapters(b);
     return;
   }
   openBook(c.dataset.id, { play: true });
@@ -426,7 +427,7 @@ function openAdd() {
 
 /* ---------- reproducción ---------- */
 async function loadTrack(i, t = 0) {
-  const blob = await dbGet('files', cur.id + ':' + i);
+  const blob = await dbGet('files', (cur.tracks[i] && cur.tracks[i].key) || cur.id + ':' + i);
   if (!blob) { toast('Falta el archivo de audio'); return false; }
   if (curUrl) URL.revokeObjectURL(curUrl);
   curUrl = URL.createObjectURL(blob);
@@ -486,6 +487,7 @@ function skip(d) {
 async function nextTrack(autoplay = true) {
   if (!cur || loadedId !== cur.id) return;
   if (cur.pos.track >= cur.tracks.length - 1) {
+    if (partial(cur)) { audio.pause(); toast('Fin de lo convertido. Convierte más capítulos en Opciones → Capítulos del libro.'); return; }
     cur.finished = true; cur.pos.time = audio.duration || 0;
     audio.pause(); await savePos(); renderAll(); renderPlayer(); return;
   }
@@ -540,13 +542,22 @@ function showPlayer(v) {
   $('#player').setAttribute('aria-hidden', String(!v));
   renderMini();
 }
+function chapLabel() {
+  const tr = cur.tracks[cur.pos.track];
+  if (cur.job && cur.job.all && tr && tr.ch != null) {
+    const k = cur.job.all.findIndex(a => a.i === tr.ch);
+    if (k >= 0) return `Capítulo ${k + 1} de ${cur.job.all.length}`;
+  }
+  return `${cur.job ? 'Capítulo' : 'Pista'} ${cur.pos.track + 1} de ${cur.tracks.length}`;
+}
+const partial = b => !!(b.job && b.job.all && b.tracks.length < b.job.all.length);
 function renderPlayer() {
   if (!cur) return;
   $('#pCover').innerHTML = coverHTML(cur);
   $('#pTitle').textContent = cur.title;
   $('#pAuthor').textContent = cur.author || '';
   const tr = cur.tracks[cur.pos.track];
-  $('#pTrack').textContent = cur.tracks.length > 1 ? `${cur.job ? 'Capítulo' : 'Pista'} ${cur.pos.track + 1} de ${cur.tracks.length} · ${tr ? tr.name : ''}` : '';
+  $('#pTrack').textContent = cur.tracks.length > 1 || cur.job ? `${chapLabel()} · ${tr ? tr.name : ''}` : '';
   $('#bSpeed').textContent = (cur.speed || 1).toFixed(2).replace(/0$/, '') + '×';
   $('#bSpeed').classList.toggle('on', (cur.speed || 1) !== 1);
   $('#bMarks').textContent = 'Marcadores' + (cur.bookmarks.length ? ` (${cur.bookmarks.length})` : '');
@@ -570,7 +581,7 @@ function updateTime() {
   $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
   const tt = total(cur), pr = prog(cur), n = cur.tracks.length;
   $('#bkFill').style.width = (pr * 100).toFixed(1) + '%';
-  $('#bkL').textContent = (n > 1 ? `${cur.job ? 'Capítulo' : 'Pista'} ${cur.pos.track + 1} de ${n} · ` : '') + `${Math.round(pr * 100)}% del libro`;
+  $('#bkL').textContent = (n > 1 || cur.job ? chapLabel() + ' · ' : '') + `${Math.round(pr * 100)}% ${partial(cur) ? 'de lo convertido' : 'del libro'}`;
   $('#bkR').textContent = tt ? `${fmtLeft(cur.finished ? tt : elapsed(cur))} de ${fmtLeft(tt)}` : '';
 }
 function updatePlay() {
@@ -685,11 +696,12 @@ $('#bTracks').onclick = () => {
 
 /* ---------- más opciones ---------- */
 $('#pMore').onclick = () => {
-  const jb = cur.job && cur.job.next < cur.job.chapters.length ? cur.job : null;
+  const jb = cur.job && cur.job.queue && cur.job.queue.length ? cur.job : null;
   const running = conv && conv.book === cur;
   const extra = running ? '<button class="li" data-a="stop"><div class="n"><b>Detener la conversión</b></div></button>'
-    : jb ? `<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b><span>${jb.next} de ${jb.chapters.length} capítulos hechos</span></div></button>` : '';
-  sheet('Opciones del libro', extra + `
+    : jb ? `<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b><span>${cur.tracks.length} de ${jb.all.length} capítulos hechos</span></div></button>` : '';
+  const chaps = cur.job && cur.job.all ? `<button class="li" data-a="chapters"><div class="n"><b>Capítulos del libro</b><span>${cur.tracks.length} de ${cur.job.all.length} convertidos · elegir cuáles convertir</span></div></button>` : '';
+  sheet('Opciones del libro', chaps + extra + `
     <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
     <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
     <button class="li" data-a="restart"><div class="n"><b>Empezar de nuevo</b></div></button>
@@ -697,7 +709,7 @@ $('#pMore').onclick = () => {
     <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
     body.onclick = e => {
       const b = e.target.closest('[data-a]'); if (!b) return;
-      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, stop: () => { closeSheet(); stopConv(); } })[b.dataset.a]();
+      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, chapters: () => openChapters(), stop: () => { closeSheet(); stopConv(); } })[b.dataset.a]();
     };
   });
 };
@@ -730,7 +742,7 @@ async function deleteBook() {
   if (conv && conv.book === b) conv.cancel = true;
   audio.pause(); audio.removeAttribute('src'); audio.load(); loadedId = null;
   if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
-  for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.id + ':' + i);
+  for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.tracks[i].key || b.id + ':' + i);
   await dbDel('files', b.id + ':epub').catch(() => {});
   await dbDel('books', b.id);
   books = books.filter(x => x.id !== b.id);
@@ -771,7 +783,39 @@ $('#convStop').onclick = stopConv;
 async function keepAwake() {
   try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
 }
-document.addEventListener('visibilitychange', () => { if (conv && !document.hidden) { wake = null; keepAwake(); } });
+document.addEventListener('visibilitychange', () => {
+  if (!conv) return;
+  if (!document.hidden) { wake = null; keepAwake(); }
+  if (keep && keep.paused) keep.play().catch(() => {});
+});
+
+/* Con la pantalla apagada, Android duerme las páginas que no suenan. Un audio casi silencioso en bucle
+   hace que el sistema trate la app como un reproductor y la deje seguir convirtiendo. */
+let keep = null, keepUrl = null;
+function silentWav() {
+  const rate = 8000, n = rate, dv = new DataView(new ArrayBuffer(44 + n * 2));
+  const w = (o, t) => [...t].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  w(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 200), true);   // ruido imperceptible
+  return new Blob([dv.buffer], { type: 'audio/wav' });
+}
+async function keepAlive(on) {
+  if (on) {
+    if (!keep) { keepUrl = URL.createObjectURL(silentWav()); keep = new Audio(keepUrl); keep.loop = true; }
+    try { await keep.play(); } catch (e) {}
+    if ('mediaSession' in navigator && audio.paused) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: 'Convirtiendo libro…', artist: 'Lector Book' });
+      navigator.mediaSession.playbackState = 'playing';
+    }
+  } else if (keep) {
+    keep.pause();
+    if (audio.paused) { if (cur) setMediaSession(); else if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; }
+    updatePlay();
+  }
+}
 
 async function runJob(book) {
   if (conv) { toast('Ya hay una conversión en marcha'); return; }
@@ -779,6 +823,7 @@ async function runJob(book) {
   conv = { book, cancel: false };
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
+  await keepAlive(true);
   let failed = 0;
   try {
     const file = await dbGet('files', book.id + ':epub');
@@ -788,13 +833,16 @@ async function runJob(book) {
       showConv('Descargando la voz…', 0);
       await Voice.download(job.voice, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
     }
-    while (job.next < job.chapters.length && !conv.cancel) {
-      const ch = epub.chapters[job.chapters[job.next]];
+    let made = 0;
+    while (job.queue.length && !conv.cancel) {
+      const ci = job.queue[0];
+      const ch = epub.chapters[ci];
       const chunks = Epub.toChunks(ch.blocks);
       const sink = await Voice.createSink();
-      const label = `Capítulo ${job.next + 1} de ${job.chapters.length}`;
+      const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
+      const label = `Capítulo ${rank} de ${job.all.length}`;
       for (let k = 0; k < chunks.length && !conv.cancel; k++) {
-        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (job.next + k / chunks.length) / job.chapters.length);
+        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
         let r = null;
         for (let t = 0; t < 2 && !r; t++) { try { r = await Voice.synth(chunks[k].text, job.voice); } catch (e) { if (t) failed++; } }
         if (r) await sink.add(r.samples, r.rate);
@@ -803,19 +851,24 @@ async function runJob(book) {
       if (conv.cancel) break;
       const out = await sink.finish();
       if (conv.cancel) break;
-      await dbPut('files', out.blob, book.id + ':' + book.tracks.length);
-      book.tracks.push({ name: job.titles[job.next], duration: out.seconds });
-      job.next++;
+      const key = book.id + ':c' + ci;
+      await dbPut('files', out.blob, key);
+      let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;
+      if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
+      book.tracks.splice(at, 0, { name: ch.title, duration: out.seconds, key, ch: ci });
+      if (book.finished) { book.finished = false; book.pos = { track: at, time: 0 }; }
+      job.queue = job.queue.filter(x => x !== ci);
+      made++;
       await dbPut('books', book);
       renderAll(); if (cur === book) renderPlayer();
-      if (job.next === 1) toast('Primer capítulo listo: ya puedes escucharlo');
+      if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
     }
-    if (job.next >= job.chapters.length) toast(failed ? `Libro terminado (${failed} frases no se pudieron leer)` : 'Libro convertido por completo');
+    if (!job.queue.length) toast(failed ? `Conversión terminada (${failed} frases no se pudieron leer)` : 'Capítulos convertidos');
     else if (conv.cancel) toast('Conversión detenida. Puedes continuarla desde el libro.');
   } catch (e) {
     toast(String(e.message || e).slice(0, 140));
   } finally {
-    conv = null; showConv(); renderLibrary();
+    conv = null; showConv(); renderLibrary(); keepAlive(false);
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
   }
 }
@@ -889,7 +942,7 @@ function openEpub() {
       const book = {
         id, title: $('#eTitle').value.trim() || epub.title, author: $('#eAuthor').value.trim(), cover: epub.cover,
         tracks: [], pos: { track: 0, time: 0 }, speed: 1, bookmarks: [], added: Date.now(), lastPlayed: 0, finished: false,
-        job: { voice, chapters: picks, titles: picks.map(i => epub.chapters[i].title), next: 0 }
+        job: { voice, all: epub.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0), queue: picks }
       };
       try {
         await dbPut('files', epub.file, id + ':epub');
@@ -898,6 +951,48 @@ function openEpub() {
       books.push(book);
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
       closeSheet(); renderAll(); runJob(book);
+    };
+  });
+}
+
+/* Libros convertidos con la versión anterior: pasan al formato por capítulos */
+function migrateJob(b) {
+  const j = b.job; if (!j || j.queue) return;
+  j.queue = j.chapters.slice(j.next);
+  j.all = j.chapters.map((i, k) => ({ i, title: j.titles[k], chars: 0 }));
+  b.tracks.forEach((t, k) => { t.ch = j.chapters[k]; t.key = b.id + ':' + k; });
+}
+
+/* Elegir qué capítulos convertir (ahora o más adelante) */
+async function openChapters(book) {
+  const b = book || cur, job = b.job;
+  if (!job.all || job.all.some(a => !a.chars)) {
+    try {
+      const ep = await Epub.open(await dbGet('files', b.id + ':epub'));
+      job.all = ep.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0);
+      await dbPut('books', b);
+    } catch (e) { toast('No se pudo leer el ePub guardado.'); return; }
+  }
+  const have = new Set(b.tracks.map(t => t.ch)), queued = new Set(job.queue);
+  const head = conv && conv.book === b ? job.queue[0] : null;
+  const rows = job.all.map(a => {
+    const state = have.has(a.i) ? '✓ listo' : a.i === head ? 'convirtiendo…' : queued.has(a.i) ? 'en cola' : fmtLeft(a.chars / 900 * 60);
+    const free = !have.has(a.i) && !queued.has(a.i);
+    return `<label><input type="checkbox" value="${a.i}" ${free ? '' : 'disabled'}><span>${esc(a.title)}</span><em>${state}</em></label>`;
+  }).join('');
+  sheet('Capítulos del libro', `<p class="sum">Marca los capítulos que quieras convertir. Se añaden a la cola y quedan en su sitio del libro.</p>
+    <div class="chl" id="cList" style="max-height:44vh">${rows}</div>
+    <button class="btn wide ghost" id="cAll">Marcar todos los pendientes</button>
+    <button class="btn wide" id="cGo">Convertir los marcados</button>`, () => {
+    $('#cAll').onclick = () => document.querySelectorAll('#cList input:not(:disabled)').forEach(i => { i.checked = true; });
+    $('#cGo').onclick = () => {
+      const picks = [...document.querySelectorAll('#cList input:checked')].map(i => +i.value);
+      if (!picks.length) { toast('Marca al menos un capítulo'); return; }
+      const first = conv && conv.book === b ? job.queue.slice(0, 1) : [];
+      const rest = [...new Set([...job.queue.slice(first.length), ...picks])].sort((x, y) => x - y);
+      job.queue = [...first, ...rest];
+      dbPut('books', b); closeSheet(); renderAll();
+      if (!conv) runJob(b); else toast('Añadidos a la cola');
     };
   });
 }
@@ -916,11 +1011,12 @@ addEventListener('appinstalled', () => { $('#install').hidden = true; });
   try {
     await openDB();
     books = await dbAll('books');
+    books.forEach(migrateJob);
     books.forEach(b => { b.pos = b.pos || { track: 0, time: 0 }; b.bookmarks = b.bookmarks || []; b.speed = b.speed || 1; });
     cur = lastBook();
     renderAll();
     if (cur) renderPlayer();
-    if (books.some(b => b.job && b.job.next < b.job.chapters.length)) setTimeout(() => toast('Tienes una conversión sin terminar: ábrela y pulsa su libro'), 800);
+    if (books.some(b => b.job && b.job.queue && b.job.queue.length)) setTimeout(() => toast('Tienes una conversión sin terminar: ábrela y pulsa su libro'), 800);
   } catch (e) {
     $('#empty').hidden = false;
     $('#empty').innerHTML = '<b>No se pudo abrir el almacenamiento</b>Este navegador no permite guardar libros (¿modo privado?).';
