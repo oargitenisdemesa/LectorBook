@@ -63,7 +63,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 #mini .mb{height:3px;background:var(--line)}
 #mini .mb i{display:block;height:100%;background:var(--accent);width:0}
 
-#player{position:fixed;inset:0;z-index:20;background:linear-gradient(180deg,#2a211b,var(--bg) 60%);transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:calc(12px + env(safe-area-inset-top)) 22px calc(18px + env(safe-area-inset-bottom));overflow-y:auto}
+#player{position:fixed;inset:0;z-index:20;background:linear-gradient(180deg,#2a211b,var(--bg) 60%);transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:14px 16px calc(20px + env(safe-area-inset-bottom));}
 #player.open{transform:none}
 .pTop{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:13px;letter-spacing:.5px;text-transform:uppercase}
 .pTop button{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;color:var(--text)}
@@ -100,7 +100,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 #sheetWrap.open{visibility:visible}
 .scrim{position:absolute;inset:0;background:#000a;opacity:0;transition:opacity .25s}
 #sheetWrap.open .scrim{opacity:1}
-.sheet{position:absolute;left:0;right:0;bottom:0;max-height:82vh;background:var(--card);border-radius:22px 22px 0 0;padding:16px 18px calc(22px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .28s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:82vh;background:var(--card);border-radius:22px 22px 0 0;padding:16px 18px calc(22px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .25s ease}
 #sheetWrap.open .sheet{transform:none}
 .sheetHead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .sheetHead b{font-size:17px}
@@ -144,8 +144,10 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .ck{display:flex;gap:10px;align-items:flex-start;margin:0 0 14px;font-size:14px;color:var(--text);line-height:1.35}
 .ck input{width:18px;height:18px;accent-color:var(--accent);flex:none;margin-top:1px}
 .ck small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
-#toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:60;max-width:88vw;text-align:center}
+#toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s,transform .2s}
 #toast.show{opacity:1;transform:translate(-50%,0)}
+.gemini-actions{display:flex;gap:8px;align-items:center;margin-top:8px}
+.gemini-actions .btn{padding:10px 12px;font-size:13px}
 </style>
 </head>
 <body>
@@ -230,7 +232,6 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 <script src="tts.js"></script>
 <script>
 'use strict';
-/* ---------- utilidades ---------- */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -245,17 +246,13 @@ const fmtLeft = s => {
   return h ? `${h} h ${m} min` : `${m} min`;
 };
 const hue = t => { let h = 0; for (const c of String(t)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
-const I = {
-  play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
-  pause: '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>'
-};
+const I = { play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>', pause: '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>' };
 let toastT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-/* ---------- base de datos (IndexedDB) ---------- */
 let db;
 function openDB() {
   return new Promise((res, rej) => {
@@ -275,7 +272,6 @@ const dbGet = (n, k) => req(store(n).get(k));
 const dbAll = n => req(store(n).getAll());
 const dbDel = (n, k) => req(store(n, 'readwrite').delete(k));
 
-/* ---------- estado ---------- */
 let books = [], filter = 'all', query = '';
 let cur = null, loadedId = null, curUrl = null;
 let sleep = null, sleepTimer = null, dragging = false, lastSave = 0;
@@ -294,11 +290,9 @@ function coverUrl(b) {
 }
 function coverHTML(b) {
   const u = coverUrl(b), h = hue(b.title);
-  return `<div class="cover" style="background:linear-gradient(135deg,hsl(${h} 70% 46%),hsl(${(h + 50) % 360} 70% 27%))">` +
-    (u ? `<img src="${u}" alt="">` : `<div class="ph">${esc(b.title)}</div>`) + '</div>';
+  return `<div class="cover" style="background:linear-gradient(135deg,hsl(${h} 70% 46%),hsl(${(h + 50) % 360} 70% 27%))">` + (u ? `<img src="${u}" alt="">` : `<div class="ph">${esc(b.title)}</div>`) + '</div>';
 }
 
-/* ---------- biblioteca ---------- */
 function renderLibrary() {
   let list = books.slice().sort((a, b) => (b.lastPlayed || b.added) - (a.lastPlayed || a.added));
   const q = query.trim().toLowerCase();
@@ -309,7 +303,7 @@ function renderLibrary() {
   if (!books.length) {
     grid.innerHTML = '';
     empty.hidden = false;
-    empty.innerHTML = `<b>Tu biblioteca está vacía</b>Añade tus audiolibros desde tu dispositivo.<br>Quedan guardados en este navegador y funcionan sin conexión.<br><button class="btn" id="emptyAdd">+ Añadir audiolibro</button><small>En iPhone: pulsa Compartir y «Añadir a pantalla de inicio» para instalarla.</small>`;
+    empty.innerHTML = `<b>Tu biblioteca está vacía</b>Añade tus audiolibros desde tu dispositivo.<br>Quedan guardados en este navegador y funcionan sin conexión.<br><button class="btn" id="emptyAdd">Añadir libro</button>`;
     $('#emptyAdd').onclick = openAdd;
     return;
   }
@@ -323,10 +317,8 @@ function renderLibrary() {
   grid.innerHTML = list.map(b => {
     const p = prog(b);
     const jb = b.job && b.job.queue && b.job.queue.length ? b.job : null;
-    const status = jb ? `${conv && conv.book === b ? 'Convirtiendo' : 'Conversión pausada'} · ${b.tracks.length}/${jb.all.length} cap.` : b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}% · quedan ${fmtLeft(total(b) - elapsed(b))}` : fmtLeft(total(b));
-    return `<button class="card" data-id="${b.id}">${coverHTML(b)}
-      <div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || 'Autor desconocido')}</div>
-      <div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><div class="p">${status}</div></button>`;
+    const status = jb ? `${conv && conv.book === b ? 'Convirtiendo' : 'Conversión pausada'} · ${b.tracks.length}/${jb.all.length} cap.` : b.finished ? 'Terminado' : p > 0 ? `${Math.round(p * 100)}%` : 'Sin empezar';
+    return `<button class="card" data-id="${b.id}">${coverHTML(b)}<div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || 'Autor desconocido')}</div><div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div><div class="p">${status}</div></button>`;
   }).join('');
 }
 function renderMini() {
@@ -361,7 +353,6 @@ $('#chips').addEventListener('click', e => {
 $('#q').addEventListener('input', e => { query = e.target.value; renderLibrary(); });
 $('#addBtn').onclick = openAdd;
 
-/* ---------- hojas inferiores ---------- */
 function sheet(title, html, mount) {
   $('#sheetTitle').textContent = title;
   $('#sheetBody').innerHTML = html;
@@ -372,7 +363,6 @@ function closeSheet() { $('#sheetWrap').classList.remove('open'); }
 $('#sheetX').onclick = closeSheet;
 $('#scrim').onclick = closeSheet;
 
-/* ---------- añadir libro ---------- */
 function getDuration(blob) {
   return new Promise(res => {
     const a = new Audio(), u = URL.createObjectURL(blob);
@@ -430,7 +420,6 @@ function openAdd() {
   });
 }
 
-/* ---------- reproducción ---------- */
 async function loadTrack(i, t = 0) {
   const blob = await dbGet('files', (cur.tracks[i] && cur.tracks[i].key) || cur.id + ':' + i);
   if (!blob) { toast('Falta el archivo de audio'); return false; }
@@ -469,7 +458,7 @@ async function openBook(id, opts = {}) {
 async function playAudio() {
   if (!cur || loadedId !== cur.id) return;
   if (cur.finished) { cur.finished = false; cur.pos = { track: 0, time: 0 }; await loadTrack(0, 0); renderPlayer(); }
-  try { await audio.play(); } catch (e) { /* el navegador pidió un toque del usuario */ }
+  try { await audio.play(); } catch (e) {}
   cur.lastPlayed = Date.now();
 }
 async function togglePlay() {
@@ -541,7 +530,6 @@ audio.addEventListener('ended', () => {
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
 addEventListener('pagehide', savePos);
 
-/* ---------- interfaz del reproductor ---------- */
 function showPlayer(v) {
   $('#player').classList.toggle('open', v);
   $('#player').setAttribute('aria-hidden', String(!v));
@@ -610,11 +598,9 @@ seek.addEventListener('change', () => {
   dragging = false; savePos();
 });
 
-/* ---------- velocidad ---------- */
 $('#bSpeed').onclick = () => {
   const speeds = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
-  sheet('Velocidad de reproducción', `<div class="opts">${speeds.map(s =>
-    `<button data-s="${s}" class="${(cur.speed || 1) === s ? 'on' : ''}">${s}×</button>`).join('')}</div>`, body => {
+  sheet('Velocidad de reproducción', `<div class="opts">${speeds.map(s => `<button data-s="${s}" class="${(cur.speed || 1) === s ? 'on' : ''}">${s}×</button>`).join('')}</div>`, body => {
     body.onclick = async e => {
       const b = e.target.closest('button'); if (!b) return;
       cur.speed = +b.dataset.s;
@@ -624,7 +610,6 @@ $('#bSpeed').onclick = () => {
   });
 };
 
-/* ---------- temporizador para dormir ---------- */
 function setSleep(min) {
   clearInterval(sleepTimer); sleepTimer = null; sleep = null; audio.volume = 1;
   if (min === 'track') sleep = { endOfTrack: true };
@@ -646,8 +631,7 @@ function updateSleepLabel() {
 }
 $('#bSleep').onclick = () => {
   const opts = [[15, '15 min'], [30, '30 min'], [45, '45 min'], [60, '1 hora'], [90, '1,5 h'], ['track', 'Fin de pista']];
-  sheet('Temporizador para dormir', `<div class="opts">${opts.map(o => `<button data-m="${o[0]}">${o[1]}</button>`).join('')}</div>` +
-    (sleep ? '<button class="btn wide danger" id="sleepOff">Desactivar temporizador</button>' : ''), body => {
+  sheet('Temporizador para dormir', `<div class="opts">${opts.map(o => `<button data-m="${o[0]}">${o[1]}</button>`).join('')}</div>` + (sleep ? '<button class="btn wide danger" id="sleepOff">Desactivar temporizador</button>' : ''), body => {
     body.onclick = e => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.id === 'sleepOff') setSleep(0);
@@ -657,14 +641,11 @@ $('#bSleep').onclick = () => {
   });
 };
 
-/* ---------- marcadores ---------- */
 function renderMarks() {
   const t = loadedId === cur.id ? audio.currentTime : cur.pos.time;
   const list = cur.bookmarks.slice().sort((a, b) => a.track - b.track || a.time - b.time);
   return `<div class="addrow"><input id="mkNote" placeholder="Nota (opcional)"><button class="btn" id="mkAdd">+ ${fmt(t)}</button></div>` +
-    (list.length ? list.map(m => `<div class="li"><button class="n" data-go="${m.id}"><b>${esc(m.note || 'Marcador')}</b>
-      <span>${cur.tracks.length > 1 ? 'Pista ' + (m.track + 1) + ' · ' : ''}${fmt(m.time)}</span></button>
-      <button class="x" data-del="${m.id}" aria-label="Borrar">✕</button></div>`).join('') : '<div class="mkEmpty">Aún no tienes marcadores en este libro.</div>');
+    (list.length ? list.map(m => `<div class="li"><button class="n" data-go="${m.id}"><b>${esc(m.note || 'Marcador')}</b><span>${cur.tracks.length > 1 ? 'Pista ' + (m.track + 1) + ' · ' : ''}${fmt(m.time)}</span></button><button class="x" data-del="${m.id}" aria-label="Borrar">✕</button></div>`).join('') : '<div class="mkEmpty">Aún no tienes marcadores en este libro.</div>');
 }
 $('#bMarks').onclick = () => {
   const mount = body => {
@@ -688,10 +669,8 @@ $('#bMarks').onclick = () => {
   sheet('Marcadores', renderMarks(), mount);
 };
 
-/* ---------- lista de pistas ---------- */
 $('#bTracks').onclick = () => {
-  sheet('Pistas', cur.tracks.map((t, i) => `<button class="li ${i === cur.pos.track ? 'on' : ''}" data-i="${i}">
-    <div class="n"><b>${i + 1}. ${esc(t.name)}</b><span>${fmt(t.duration)}</span></div></button>`).join(''), body => {
+  sheet('Pistas', cur.tracks.map((t, i) => `<button class="li ${i === cur.pos.track ? 'on' : ''}" data-i="${i}"><div class="n"><b>${i + 1}. ${esc(t.name)}</b><span>${fmt(t.duration)}</span></div></button>`).join(''), body => {
     body.onclick = e => {
       const b = e.target.closest('[data-i]'); if (!b) return;
       closeSheet(); jumpTo(+b.dataset.i, 0);
@@ -699,13 +678,11 @@ $('#bTracks').onclick = () => {
   });
 };
 
-/* ---------- más opciones ---------- */
 $('#pMore').onclick = () => {
   const jb = cur.job && cur.job.queue && cur.job.queue.length ? cur.job : null;
   const running = conv && conv.book === cur;
-  const extra = running ? '<button class="li" data-a="stop"><div class="n"><b>Detener la conversión</b></div></button>'
-    : jb ? `<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b><span>${cur.tracks.length} de ${jb.all.length} capítulos hechos</span></div></button>` : '';
-  const chaps = cur.job && cur.job.all ? `<button class="li" data-a="chapters"><div class="n"><b>Capítulos del libro</b><span>${cur.tracks.length} de ${cur.job.all.length} convertidos · elegir cuáles convertir</span></div></button>` : '';
+  const extra = running ? '<button class="li" data-a="stop"><div class="n"><b>Detener la conversión</b></div></button>' : jb ? `<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b><span>${cur.tracks.length} de ${jb.all.length} capítulos hechos</span></div></button>` : '';
+  const chaps = cur.job && cur.job.all ? `<button class="li" data-a="chapters"><div class="n"><b>Capítulos del libro</b><span>${cur.tracks.length} de ${cur.job.all.length} convertidos · elegir capítulo</span></div></button>` : '';
   sheet('Opciones del libro', chaps + extra + `
     <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
     <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
@@ -714,7 +691,7 @@ $('#pMore').onclick = () => {
     <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
     body.onclick = e => {
       const b = e.target.closest('[data-a]'); if (!b) return;
-      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, chapters: () => openChapters(), stop: () => { closeSheet(); stopConv(); } })[b.dataset.a]();
+      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, chapters: () => openChapters(), stop: () => { closeSheet(); if (conv && conv.book === cur) { conv.cancel = true; } } }[b.dataset.a])();
     };
   });
 };
@@ -755,7 +732,6 @@ async function deleteBook() {
   cur = lastBook(); closeSheet(); showPlayer(false); renderAll(); toast('Libro eliminado');
 }
 
-/* ---------- controles del sistema (pantalla de bloqueo) ---------- */
 function setMediaSession() {
   if (!('mediaSession' in navigator) || !cur) return;
   const u = coverUrl(cur);
@@ -773,7 +749,6 @@ function setMediaSession() {
   h('seekto', d => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
 }
 
-/* ---------- conversión de ePub a audio ---------- */
 let conv = null, wake = null;
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
@@ -794,8 +769,6 @@ document.addEventListener('visibilitychange', () => {
   if (keep && keep.paused) keep.play().catch(() => {});
 });
 
-/* Con la pantalla apagada, Android duerme las páginas que no suenan. Un audio casi silencioso en bucle
-   hace que el sistema trate la app como un reproductor y la deje seguir convirtiendo. */
 let keep = null, keepUrl = null;
 function silentWav() {
   const rate = 8000, n = rate, dv = new DataView(new ArrayBuffer(44 + n * 2));
@@ -804,7 +777,7 @@ function silentWav() {
   dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
   dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
   w(36, 'data'); dv.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 200), true);   // ruido imperceptible
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 200), true);
   return new Blob([dv.buffer], { type: 'audio/wav' });
 }
 async function keepAlive(on) {
@@ -895,8 +868,9 @@ function openEpub() {
       <div class="lbl">Capítulos a convertir</div><div class="chl" id="eList"></div>
       <p class="sum" id="eLang" style="color:var(--accent)" hidden></p>
       <label class="f">Voz del narrador<select class="sel" id="eVoice"></select></label>
+      <div class="gemini-actions"><button class="btn ghost" id="eGeminiKey" type="button">Clave Gemini</button></div>
       <label class="f">Voz de los diálogos<select class="sel" id="eVoiceD"></select></label>
-      <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, gritos, pensamientos (cursivas) y apartes.</small></span></label>
+      <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, grito, dudas…</small></span></label>
       <p class="sum" id="eSum"></p>
       <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
       <button class="btn wide" id="eGo">Empezar la conversión</button>
@@ -911,6 +885,8 @@ function openEpub() {
       const sd = $('#eVoiceD'), savedD = lsGet('lb-voice-d');
       sd.innerHTML = '<option value="">La misma voz</option>' + opts;
       if (savedD && list.some(v => v.id === savedD)) sd.value = savedD;
+      const key = Voice.getGeminiKey();
+      $('#eGeminiKey').textContent = key ? 'Clave Gemini: activa' : 'Clave Gemini';
     };
     const sum = () => {
       const boxes = [...document.querySelectorAll('#eList input:checked')];
@@ -918,7 +894,7 @@ function openEpub() {
       const min = chars / 900;
       const mb = min * 60 * 4000 / 1e6 * 1.1;
       $('#eSum').textContent = boxes.length
-        ? `${boxes.length} ${boxes.length === 1 ? 'capítulo' : 'capítulos'} · unos ${fmtLeft(min * 60)} de audio · ocupará unos ${Math.max(1, Math.round(mb))} MB. La conversión puede tardar bastante más que la propia duración del libro; el primer capítulo estará listo enseguida.`
+        ? `${boxes.length} ${boxes.length === 1 ? 'capítulo' : 'capítulos'} · unos ${fmtLeft(min * 60)} de audio · ocupará unos ${Math.max(1, Math.round(mb))} MB. La conversión puede tardar varios minutos.`
         : 'Elige al menos un capítulo.';
       $('#eGo').disabled = !boxes.length;
     };
@@ -929,9 +905,8 @@ function openEpub() {
         const usable = epub.chapters.filter(c => c.chars > 0).length;
         if (!usable) throw new Error('No se encontró texto en este ePub.');
         $('#eTitle').value = epub.title; $('#eAuthor').value = epub.author;
-        $('#eList').innerHTML = epub.chapters.map((c, i) => c.chars > 0 ?
-          `<label><input type="checkbox" value="${i}" ${c.chars >= 600 ? 'checked' : ''}><span>${esc(c.title)}</span><em>${fmtLeft(c.chars / 900 * 60)}</em></label>` : '').join('');
-        if (!document.querySelector('#eList input:checked')) document.querySelectorAll('#eList input').forEach(i => { i.checked = true; });   // textos cortos: todo marcado
+        $('#eList').innerHTML = epub.chapters.map((c, i) => c.chars > 0 ? `<label><input type="checkbox" value="${i}" ${c.chars >= 600 ? 'checked' : ''}><span>${esc(c.title)}</span><em>${fmtLeft(c.chars / 900 * 60)}</em></label>` : '').join('');
+        if (!document.querySelector('#eList input:checked')) document.querySelectorAll('#eList input').forEach(i => { i.checked = true; });
         $('#eList').onchange = sum;
         const lg = $('#eLang'), l = (epub.language || '').slice(0, 2).toLowerCase();
         lg.hidden = !(l && l !== 'es');
@@ -945,6 +920,16 @@ function openEpub() {
       if (t.length < 20) { $('#eMsg').textContent = 'Pega primero el texto (al menos una frase).'; return; }
       const first = t.split('\n').find(x => x.trim()) || 'Texto pegado';
       loadFile(new File([t], first.trim().slice(0, 50).replace(/[\\/:*?"<>|.]+/g, ' ').trim() + '.txt', { type: 'text/plain' }));
+    };
+    $('#eGeminiKey').onclick = () => {
+      const current = Voice.getGeminiKey();
+      const next = window.prompt('Introduce tu API key de Gemini (Google AI Studio).', current || '');
+      if (next === null) return;
+      const trimmed = next.trim();
+      if (!trimmed) { Voice.setGeminiKey(''); $('#eGeminiKey').textContent = 'Clave Gemini'; toast('Clave Gemini eliminada'); return; }
+      Voice.setGeminiKey(trimmed);
+      $('#eGeminiKey').textContent = 'Clave Gemini: activa';
+      toast('Clave Gemini guardada');
     };
     $('#eTest').onclick = async () => {
       const btn = $('#eTest'), id = $('#eVoice').value, idD = $('#eVoiceD').value || id, ex = $('#eExpr').checked; btn.disabled = true;
@@ -989,7 +974,6 @@ function openEpub() {
   });
 }
 
-/* Libros convertidos con la versión anterior: pasan al formato por capítulos */
 function migrateJob(b) {
   const j = b.job; if (!j || j.queue) return;
   j.queue = j.chapters.slice(j.next);
@@ -997,66 +981,33 @@ function migrateJob(b) {
   b.tracks.forEach((t, k) => { t.ch = j.chapters[k]; t.key = b.id + ':' + k; });
 }
 
-/* Elegir qué capítulos convertir (ahora o más adelante) */
-async function openChapters(book) {
-  const b = book || cur, job = b.job;
-  if (!job.all || job.all.some(a => !a.chars)) {
-    try {
-      const ep = await Docs.open(await dbGet('files', b.id + ':epub'));
-      job.all = ep.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0);
-      await dbPut('books', b);
-    } catch (e) { toast('No se pudo leer el ePub guardado.'); return; }
-  }
-  const have = new Set(b.tracks.map(t => t.ch)), queued = new Set(job.queue);
-  const head = conv && conv.book === b ? job.queue[0] : null;
-  const rows = job.all.map(a => {
-    const state = have.has(a.i) ? '✓ listo' : a.i === head ? 'convirtiendo…' : queued.has(a.i) ? 'en cola' : fmtLeft(a.chars / 900 * 60);
-    const free = !have.has(a.i) && !queued.has(a.i);
-    return `<label><input type="checkbox" value="${a.i}" ${free ? '' : 'disabled'}><span>${esc(a.title)}</span><em>${state}</em></label>`;
-  }).join('');
-  sheet('Capítulos del libro', `<p class="sum">Marca los capítulos que quieras convertir. Se añaden a la cola y quedan en su sitio del libro.</p>
-    <div class="chl" id="cList" style="max-height:44vh">${rows}</div>
-    <button class="btn wide ghost" id="cAll">Marcar todos los pendientes</button>
-    <button class="btn wide" id="cGo">Convertir los marcados</button>`, () => {
-    $('#cAll').onclick = () => document.querySelectorAll('#cList input:not(:disabled)').forEach(i => { i.checked = true; });
-    $('#cGo').onclick = () => {
-      const picks = [...document.querySelectorAll('#cList input:checked')].map(i => +i.value);
-      if (!picks.length) { toast('Marca al menos un capítulo'); return; }
-      const first = conv && conv.book === b ? job.queue.slice(0, 1) : [];
-      const rest = [...new Set([...job.queue.slice(first.length), ...picks])].sort((x, y) => x - y);
-      job.queue = [...first, ...rest];
-      dbPut('books', b); closeSheet(); renderAll();
-      if (!conv) runJob(b); else toast('Añadidos a la cola');
+function openChapters(book = cur) {
+  const list = (book.job && book.job.all ? book.job.all : []).map((c, i) => ({ ...c, idx: i }));
+  if (!list.length) return;
+  sheet('Capítulos del libro', `<div class="chl">${list.map(c => `<label><input type="checkbox" value="${c.i}" ${book.tracks.some(t => t.ch === c.i) ? 'checked' : ''}><span>${esc(c.title)}</span></label>`).join('')}</div><button class="btn wide" id="chapSave">Guardar selección</button>`, body => {
+    $('#chapSave').onclick = async () => {
+      const sel = [...document.querySelectorAll('#sheetBody input:checked')].map(i => +i.value);
+      book.job = book.job || { voice: 'es_ES-davefx-medium', voiceDial: '', expr: true, all: [], queue: [] };
+      book.job.all = sel.map(i => ({ i, title: book.job.all.find(a => a.i === i)?.title || `Capítulo ${i + 1}`, chars: 0 }));
+      book.job.queue = [...sel];
+      await dbPut('books', book); closeSheet(); renderAll();
+      if (book.tracks.length) { if (conv && conv.book === book) conv.cancel = true; }
+      if (book.tracks.length) { book.tracks = book.tracks.filter(t => t.ch != null && sel.includes(t.ch)); }
+      if (book.job.queue.length) runJob(book);
     };
   });
 }
 
-/* ---------- instalación y arranque ---------- */
-let deferredPrompt;
-addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; $('#install').hidden = false; });
-$('#install').onclick = async () => {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt(); await deferredPrompt.userChoice;
-  deferredPrompt = null; $('#install').hidden = true;
-};
-addEventListener('appinstalled', () => { $('#install').hidden = true; });
-
-(async function init() {
+(async () => {
   try {
     await openDB();
     books = await dbAll('books');
-    books.forEach(migrateJob);
-    books.forEach(b => { b.pos = b.pos || { track: 0, time: 0 }; b.bookmarks = b.bookmarks || []; b.speed = b.speed || 1; });
-    cur = lastBook();
+    books.forEach(b => { if (b.job && !b.job.queue) migrateJob(b); });
+    if (books.length) cur = books[0];
     renderAll();
-    if (cur) renderPlayer();
-    if (books.some(b => b.job && b.job.queue && b.job.queue.length)) setTimeout(() => toast('Tienes una conversión sin terminar: ábrela y pulsa su libro'), 800);
+    await new Promise(r => setTimeout(r, 50));
   } catch (e) {
-    $('#empty').hidden = false;
-    $('#empty').innerHTML = '<b>No se pudo abrir el almacenamiento</b>Este navegador no permite guardar libros (¿modo privado?).';
-  }
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    console.error(e);
   }
 })();
 </script>
