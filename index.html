@@ -141,6 +141,9 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .lbl{font-size:13px;color:var(--muted)}
 .sum{color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.45}
 .btn.row{display:flex;gap:8px}
+.ck{display:flex;gap:10px;align-items:flex-start;margin:0 0 14px;font-size:14px;color:var(--text);line-height:1.35}
+.ck input{width:18px;height:18px;accent-color:var(--accent);flex:none;margin-top:1px}
+.ck small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
 #toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:60;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
@@ -222,6 +225,8 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 <div id="toast"></div>
 
 <script src="epub.js"></script>
+<script src="docs.js"></script>
+<script src="expr.js"></script>
 <script src="tts.js"></script>
 <script>
 'use strict';
@@ -387,7 +392,7 @@ function openAdd() {
     <label class="f">Portada (opcional)<input id="fCover" type="file" accept="image/*"></label>
     <p class="hint" id="fMsg"></p>
     <button class="btn wide" id="fSave">Guardar en la biblioteca</button>
-    <button class="btn wide ghost" id="fEpub">Convertir un ePub en audiolibro</button>`, body => {
+    <button class="btn wide ghost" id="fEpub">Convertir un texto o ePub en audio</button>`, body => {
     $('#fEpub').onclick = openEpub;
     const natural = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
     $('#fAudio').onchange = () => {
@@ -828,24 +833,26 @@ async function runJob(book) {
   try {
     const file = await dbGet('files', book.id + ':epub');
     if (!file) throw new Error('Falta el archivo ePub original.');
-    const epub = await Epub.open(file);
-    if (!(await Voice.isStored(job.voice))) {
+    const epub = await Docs.open(file);
+    for (const vid of [...new Set([job.voice, job.voiceDial].filter(Boolean))]) {
+      if (await Voice.isStored(vid)) continue;
       showConv('Descargando la voz…', 0);
-      await Voice.download(job.voice, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
+      await Voice.download(vid, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
     }
     let made = 0;
     while (job.queue.length && !conv.cancel) {
       const ci = job.queue[0];
       const ch = epub.chapters[ci];
-      const chunks = Epub.toChunks(ch.blocks);
+      const chunks = job.expr === true ? Expr.plan(ch.blocks) : Epub.toChunks(ch.blocks).map(c => ({ ...c, role: 'narr', f: 1, g: 1 }));
       const sink = await Voice.createSink();
       const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
       const label = `Capítulo ${rank} de ${job.all.length}`;
       for (let k = 0; k < chunks.length && !conv.cancel; k++) {
         showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
         let r = null;
-        for (let t = 0; t < 2 && !r; t++) { try { r = await Voice.synth(chunks[k].text, job.voice); } catch (e) { if (t) failed++; } }
-        if (r) await sink.add(r.samples, r.rate);
+        const vid = chunks[k].role === 'dial' && job.voiceDial ? job.voiceDial : job.voice;
+        for (let t = 0; t < 2 && !r; t++) { try { r = await Voice.synth(chunks[k].text, vid); } catch (e) { if (t) failed++; } }
+        if (r) await sink.add(Expr.shape(r.samples, chunks[k].g), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
       if (conv.cancel) break;
@@ -875,14 +882,21 @@ async function runJob(book) {
 
 function openEpub() {
   let epub = null;
-  sheet('ePub a audiolibro', `
-    <label class="f">Archivo ePub<input id="eFile" type="file" accept=".epub,application/epub+zip"></label>
+  sheet('Texto a audiolibro', `
+    <label class="f">Archivo: ePub, PDF, Word (.docx), .txt, .md, .html, .odt o .rtf
+      <input id="eFile" type="file" accept=".epub,.pdf,.docx,.odt,.rtf,.txt,.text,.md,.markdown,.html,.htm,.xhtml,.csv,.log,text/*,application/pdf,application/epub+zip"></label>
+    <label class="f">…o pega aquí el texto
+      <textarea id="eText" rows="4" placeholder="Pega o escribe el texto que quieres escuchar" style="display:block;width:100%;margin-top:6px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit;outline:none;resize:vertical"></textarea></label>
+    <button class="btn wide ghost" id="eTextGo">Usar el texto pegado</button>
     <p class="hint" id="eMsg"></p>
     <div id="eRest" hidden>
       <label class="f">Título<input id="eTitle"></label>
       <label class="f">Autor<input id="eAuthor"></label>
       <div class="lbl">Capítulos a convertir</div><div class="chl" id="eList"></div>
-      <label class="f">Voz<select class="sel" id="eVoice"></select></label>
+      <p class="sum" id="eLang" style="color:var(--accent)" hidden></p>
+      <label class="f">Voz del narrador<select class="sel" id="eVoice"></select></label>
+      <label class="f">Voz de los diálogos<select class="sel" id="eVoiceD"></select></label>
+      <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, gritos, pensamientos (cursivas) y apartes.</small></span></label>
       <p class="sum" id="eSum"></p>
       <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
       <button class="btn wide" id="eGo">Empezar la conversión</button>
@@ -891,8 +905,12 @@ function openEpub() {
       const list = await Voice.spanishVoices(), sel = $('#eVoice');
       if (!sel) return;
       const saved = lsGet('lb-voice');
-      sel.innerHTML = list.map(v => `<option value="${v.id}">${esc(v.label)}</option>`).join('');
+      const opts = list.map(v => `<option value="${v.id}">${esc(v.label)}</option>`).join('');
+      sel.innerHTML = opts;
       if (saved && list.some(v => v.id === saved)) sel.value = saved;
+      const sd = $('#eVoiceD'), savedD = lsGet('lb-voice-d');
+      sd.innerHTML = '<option value="">La misma voz</option>' + opts;
+      if (savedD && list.some(v => v.id === savedD)) sd.value = savedD;
     };
     const sum = () => {
       const boxes = [...document.querySelectorAll('#eList input:checked')];
@@ -900,35 +918,51 @@ function openEpub() {
       const min = chars / 900;
       const mb = min * 60 * 4000 / 1e6 * 1.1;
       $('#eSum').textContent = boxes.length
-        ? `${boxes.length} capítulos · unos ${fmtLeft(min * 60)} de audio · ocupará unos ${Math.max(1, Math.round(mb))} MB. La conversión puede tardar bastante más que la propia duración del libro; el primer capítulo estará listo enseguida.`
+        ? `${boxes.length} ${boxes.length === 1 ? 'capítulo' : 'capítulos'} · unos ${fmtLeft(min * 60)} de audio · ocupará unos ${Math.max(1, Math.round(mb))} MB. La conversión puede tardar bastante más que la propia duración del libro; el primer capítulo estará listo enseguida.`
         : 'Elige al menos un capítulo.';
       $('#eGo').disabled = !boxes.length;
     };
-    $('#eFile').onchange = async () => {
-      const f = $('#eFile').files[0]; if (!f) return;
-      $('#eMsg').textContent = 'Leyendo el libro…'; $('#eRest').hidden = true;
+    const loadFile = async f => {
+      $('#eMsg').textContent = 'Leyendo el texto…'; $('#eRest').hidden = true;
       try {
-        epub = await Epub.open(f); epub.file = f;
+        epub = await Docs.open(f); epub.file = f;
         const usable = epub.chapters.filter(c => c.chars > 0).length;
         if (!usable) throw new Error('No se encontró texto en este ePub.');
         $('#eTitle').value = epub.title; $('#eAuthor').value = epub.author;
         $('#eList').innerHTML = epub.chapters.map((c, i) => c.chars > 0 ?
           `<label><input type="checkbox" value="${i}" ${c.chars >= 600 ? 'checked' : ''}><span>${esc(c.title)}</span><em>${fmtLeft(c.chars / 900 * 60)}</em></label>` : '').join('');
+        if (!document.querySelector('#eList input:checked')) document.querySelectorAll('#eList input').forEach(i => { i.checked = true; });   // textos cortos: todo marcado
         $('#eList').onchange = sum;
+        const lg = $('#eLang'), l = (epub.language || '').slice(0, 2).toLowerCase();
+        lg.hidden = !(l && l !== 'es');
+        lg.textContent = `Este texto parece estar en ${l === 'en' ? 'inglés' : 'otro idioma'}. Las voces disponibles son de español y lo leerán con acento español.`;
         $('#eMsg').textContent = ''; $('#eRest').hidden = false; sum(); fillVoices();
       } catch (e) { $('#eMsg').textContent = String(e.message || e); }
     };
+    $('#eFile').onchange = () => { const f = $('#eFile').files[0]; if (f) loadFile(f); };
+    $('#eTextGo').onclick = () => {
+      const t = $('#eText').value.trim();
+      if (t.length < 20) { $('#eMsg').textContent = 'Pega primero el texto (al menos una frase).'; return; }
+      const first = t.split('\n').find(x => x.trim()) || 'Texto pegado';
+      loadFile(new File([t], first.trim().slice(0, 50).replace(/[\\/:*?"<>|.]+/g, ' ').trim() + '.txt', { type: 'text/plain' }));
+    };
     $('#eTest').onclick = async () => {
-      const btn = $('#eTest'), id = $('#eVoice').value; btn.disabled = true;
+      const btn = $('#eTest'), id = $('#eVoice').value, idD = $('#eVoiceD').value || id, ex = $('#eExpr').checked; btn.disabled = true;
       try {
-        if (!(await Voice.isStored(id))) {
-          await Voice.download(id, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
+        for (const v of [...new Set([id, idD])]) {
+          if (!(await Voice.isStored(v))) await Voice.download(v, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
         }
         btn.textContent = 'Generando…';
-        const r = await Voice.synth('Hola. Esta es la voz con la que se leerá tu libro. ¿Qué te parece?', id);
-        const ac = new (window.AudioContext || window.webkitAudioContext)(), buf = ac.createBuffer(1, r.samples.length, r.rate);
-        buf.copyToChannel(r.samples, 0);
-        const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start();
+        const demo = [{ kind: 'p', text: 'Ella lo miró en silencio. Afuera llovía desde hacía horas.' },
+          { kind: 'p', text: '—¿De verdad? —preguntó ella.' }, { kind: 'p', text: '—¡Claro que sí! —gritó él—. Y no se lo digas a nadie... —añadió en voz baja.' },
+          { kind: 'p', text: '\uE000No puede ser verdad\uE001, pensó.' }];
+        const plan = ex ? Expr.plan(demo) : Epub.toChunks(demo).map(c => ({ ...c, role: 'narr', f: 1, g: 1 }));
+        const ac = new (window.AudioContext || window.webkitAudioContext)(); let t = ac.currentTime + 0.2;
+        for (const c of plan) {
+          const r = await Voice.synth(c.text, c.role === 'dial' ? idD : id), sm = Expr.shape(r.samples, c.g);
+          const buf = ac.createBuffer(1, sm.length, Math.round(r.rate * c.f)); buf.copyToChannel(sm, 0);
+          const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start(t); t += buf.duration + c.pause;
+        }
       } catch (e) { toast(String(e.message || e).slice(0, 140)); }
       btn.textContent = '▶ Probar la voz'; btn.disabled = false;
     };
@@ -937,12 +971,12 @@ function openEpub() {
       const picks = [...document.querySelectorAll('#eList input:checked')].map(b => +b.value);
       if (!picks.length) return;
       const voice = $('#eVoice').value || 'es_ES-davefx-medium';
-      lsSet('lb-voice', voice);
+      lsSet('lb-voice', voice); lsSet('lb-voice-d', $('#eVoiceD').value || '');
       const id = uid();
       const book = {
         id, title: $('#eTitle').value.trim() || epub.title, author: $('#eAuthor').value.trim(), cover: epub.cover,
         tracks: [], pos: { track: 0, time: 0 }, speed: 1, bookmarks: [], added: Date.now(), lastPlayed: 0, finished: false,
-        job: { voice, all: epub.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0), queue: picks }
+        job: { voice, voiceDial: $('#eVoiceD').value || '', expr: $('#eExpr').checked, all: epub.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0), queue: picks }
       };
       try {
         await dbPut('files', epub.file, id + ':epub');
@@ -968,7 +1002,7 @@ async function openChapters(book) {
   const b = book || cur, job = b.job;
   if (!job.all || job.all.some(a => !a.chars)) {
     try {
-      const ep = await Epub.open(await dbGet('files', b.id + ':epub'));
+      const ep = await Docs.open(await dbGet('files', b.id + ':epub'));
       job.all = ep.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0);
       await dbPut('books', b);
     } catch (e) { toast('No se pudo leer el ePub guardado.'); return; }

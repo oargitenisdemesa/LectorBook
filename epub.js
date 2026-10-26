@@ -63,9 +63,9 @@ const Epub = (() => {
     const body = byLocal(doc, 'body')[0] || doc.documentElement;
     const out = [];
     let buf = '';
-    const flush = kind => {
+    const flush = (kind, level) => {
       const t = buf.replace(/\s+/g, ' ').trim();
-      if (t) out.push({ text: t, kind });
+      if (t) out.push(level ? { text: t, kind, level } : { text: t, kind });
       buf = '';
     };
     (function walk(node, kind) {
@@ -75,10 +75,11 @@ const Epub = (() => {
         const n = c.localName.toLowerCase();
         if (n === 'script' || n === 'style' || n === 'svg' || n === 'head' || n === 'sup' && c.getAttribute('epub:type') === 'noteref') continue;
         if (n === 'br') { buf += ' '; continue; }
+        if (n === 'i' || n === 'em') { buf += '\uE000'; walk(c, kind); buf += '\uE001'; continue; }
         if (BLOCKS.has(n)) {
           flush(kind);
           walk(c, HEAD.test(n) ? 'h' : kind);
-          flush(HEAD.test(n) ? 'h' : kind);
+          flush(HEAD.test(n) ? 'h' : kind, HEAD.test(n) ? +n[1] : 0);
         } else walk(c, kind);
       }
     })(body, 'p');
@@ -131,7 +132,7 @@ const Epub = (() => {
       const blocks = blocksFromXhtml(td.decode(data));
       const chars = blocks.reduce((s, b) => s + b.text.length, 0);
       const head = blocks.find(b => b.kind === 'h');
-      chapters.push({ path, blocks, chars, title: head ? head.text.slice(0, 90) : '' });
+      chapters.push({ path, blocks, chars, title: head ? head.text.replace(/[\uE000\uE001]/g, '').slice(0, 90) : '' });
     }
     chapters.forEach((c, i) => { if (!c.title) c.title = 'Sección ' + (i + 1); });
     return {
@@ -146,7 +147,7 @@ const Epub = (() => {
   function toChunks(blocks, maxLen = 260) {
     const out = [];
     for (const b of blocks) {
-      const text = b.text.replace(/…/g, '...').replace(/\s+/g, ' ').trim();
+      const text = b.text.replace(/[\uE000\uE001]/g, '').replace(/…/g, '...').replace(/\s+/g, ' ').trim();
       const sentences = text.match(/[^.!?]+(?:[.!?]+["'»”)\]]*|$)\s*/g) || [text];
       let cur = '';
       const emit = (t, pause) => { t = t.trim(); if (/[\p{L}\p{N}]/u.test(t)) out.push({ text: t, pause }); else if (out.length) out[out.length - 1].pause = Math.max(out[out.length - 1].pause, pause); };
@@ -168,5 +169,5 @@ const Epub = (() => {
     return out;
   }
 
-  return { open, toChunks, readZip };
+  return { open, toChunks, readZip, blocksFromXhtml };
 })();

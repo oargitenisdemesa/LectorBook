@@ -5,7 +5,7 @@ const Voice = (() => {
     'https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm',
     'https://esm.sh/@diffusionstudio/vits-web@1.0.3'
   ];
-  const FALLBACK = ['es_ES-davefx-medium', 'es_ES-sharvard-medium', 'es_MX-ald-medium'];
+  const FALLBACK = ['es_ES-davefx-medium', 'es_ES-sharvard-medium', 'es_ES-carlfm-x_low'];
   let lib = null;
 
   async function load() {
@@ -30,9 +30,9 @@ const Voice = (() => {
       const v = await l.voices();
       ids = Array.isArray(v) ? v.map(x => x.key || x.id || x.name) : Object.keys(v || {});
     } catch (e) { /* sin conexión: usamos la lista por defecto */ }
-    ids = ids.filter(id => typeof id === 'string' && /^es_/.test(id));
+    ids = ids.filter(id => typeof id === 'string' && /^es_ES-/.test(id));   // solo voces de España
     if (!ids.length) ids = FALLBACK;
-    const rank = id => (/medium|high/.test(id) ? 0 : 1) + (/^es_ES/.test(id) ? 0 : 0.5);
+    const rank = id => /high/.test(id) ? 0 : /medium/.test(id) ? 1 : 2;
     ids.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     return ids.map(id => ({ id, label: pretty(id) }));
   }
@@ -184,7 +184,7 @@ const Voice = (() => {
     constructor() { this.kind = 'wav'; this.parts = []; this.n = 0; this.rate = 22050; }
     get seconds() { return this.n / this.rate; }
     async add(samples, rate) {
-      this.rate = rate;
+      samples = resample(samples, rate, this.rate);
       const i16 = new Int16Array(samples.length);
       for (let i = 0; i < samples.length; i++) i16[i] = Math.max(-1, Math.min(1, samples[i])) * 32767;
       this.parts.push(i16); this.n += i16.length;
