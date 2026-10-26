@@ -318,25 +318,197 @@ const Docs = (() => {
     return { title, author, blocks };
   }
 
+  /* ---------- XML con su codificación declarada ---------- */
+  function decodeXml(bytes) {
+    const head = new TextDecoder('latin1').decode(bytes.subarray(0, 200));
+    const m = /encoding\s*=\s*["']([\w.-]+)["']/i.exec(head);
+    if (m && !/^utf-?8$/i.test(m[1])) { try { return new TextDecoder(m[1]).decode(bytes); } catch (e) { /* codificación desconocida */ } }
+    return decodeText(bytes);
+  }
+
+  /* ---------- FB2 (FictionBook) ---------- */
+  function fb2ToDoc(text, name) {
+    const xml = parseXml(text);
+    if (xml.getElementsByTagName('parsererror').length) throw new Error('El archivo FB2 está dañado.');
+    const first = (root, n) => byLocal(root, n)[0];
+    const info = first(xml, 'title-info');
+    const title = info && first(info, 'book-title') ? first(info, 'book-title').textContent.trim() : '';
+    const au = info && first(info, 'author');
+    const author = au ? ['first-name', 'middle-name', 'last-name'].map(n => first(au, n) ? first(au, n).textContent.trim() : '').filter(Boolean).join(' ') : '';
+    const lang = info && first(info, 'lang') ? first(info, 'lang').textContent.trim() : '';
+    const inl = n => {
+      let s = '';
+      for (const c of n.childNodes) {
+        if (c.nodeType === 3) { s += c.nodeValue; continue; }
+        if (c.nodeType !== 1) continue;
+        if (c.localName === 'image' || (c.localName === 'a' && c.getAttribute('type') === 'note')) continue;   // imágenes y llamadas a notas
+        s += c.localName === 'emphasis' ? '' + inl(c) + '' : inl(c);
+      }
+      return s;
+    };
+    const clean = s => s.replace(/\s+/g, ' ').trim();
+    const blocks = [];
+    const walk = (node, depth) => {          // depth >= 90: dentro de una cita o un poema (no cuenta como capítulo)
+      for (const c of node.children) {
+        const l = c.localName;
+        if (l === 'section') walk(c, depth + 1);
+        else if (l === 'title') {
+          const t = clean([...c.children].map(inl).join(' ')) || clean(inl(c));
+          if (t) blocks.push(depth >= 90 ? { text: t, kind: 'p' } : { text: t, kind: 'h', level: Math.min(Math.max(depth, 1), 6) });
+        } else if (l === 'p' || l === 'v' || l === 'subtitle' || l === 'text-author') { const t = clean(inl(c)); if (t) blocks.push({ text: t, kind: 'p' }); }
+        else if (l === 'epigraph' || l === 'cite' || l === 'poem' || l === 'stanza' || l === 'annotation') walk(c, 99);
+      }
+    };
+    for (const body of byLocal(xml, 'body')) { if (body.getAttribute('name') !== 'notes') walk(body, 0); }
+    let cover = null;
+    const cp = info && first(info, 'coverpage'), img = cp && first(cp, 'image');
+    if (img) {
+      const href = (img.getAttribute('l:href') || img.getAttribute('xlink:href') || img.getAttribute('href') || '').replace(/^#/, '');
+      const bin = byLocal(xml, 'binary').find(b => b.getAttribute('id') === href);
+      if (bin) { try { const raw = atob(bin.textContent.replace(/\s+/g, '')); cover = new Blob([Uint8Array.from(raw, ch => ch.charCodeAt(0))], { type: bin.getAttribute('content-type') || 'image/jpeg' }); } catch (e) { /* sin portada */ } }
+    }
+    return { title: title || name, author, blocks, cover, language: lang.slice(0, 2).toLowerCase() };
+  }
+
+  /* ---------- MOBI / AZW / AZW3 / PRC (Kindle, sin DRM) ---------- */
+  function palmInflate(d) {
+    const out = []; let i = 0;
+    while (i < d.length) {
+      const c = d[i++];
+      if (c === 0 || (c >= 9 && c <= 0x7f)) out.push(c);
+      else if (c <= 8) { for (let k = 0; k < c && i < d.length; k++) out.push(d[i++]); }
+      else if (c >= 0xc0) out.push(0x20, c ^ 0x80);
+      else { const c2 = (c << 8) | d[i++], dist = (c2 >> 3) & 0x7ff, len = (c2 & 7) + 3; for (let k = 0; k < len; k++) out.push(out[out.length - dist] || 0); }
+    }
+    return Uint8Array.from(out);
+  }
+  /* cada registro de texto puede llevar datos extra al final (se indica en las "flags") */
+  function mobiTrim(rec, flags) {
+    let end = rec.length;
+    for (let bit = 1; bit <= 15; bit++) {
+      if (!(flags & (1 << bit))) continue;
+      let n = 0, shift = 0, p = end;
+      for (;;) { const v = rec[--p]; n |= (v & 0x7f) << shift; shift += 7; if ((v & 0x80) || shift >= 28 || p <= 0) break; }
+      end -= n;
+    }
+    if (flags & 1) end -= (rec[end - 1] & 3) + 1;
+    return rec.subarray(0, Math.max(0, end));
+  }
+  async function mobiToDoc(file, name) {
+    const buf = new Uint8Array(await file.arrayBuffer()), dv = new DataView(buf.buffer);
+    const n = dv.getUint16(76), offs = [];
+    for (let i = 0; i < n; i++) offs.push(dv.getUint32(78 + i * 8));
+    const rec = i => buf.subarray(offs[i], i + 1 < n ? offs[i + 1] : buf.length);
+    const r0 = rec(0), d0 = new DataView(r0.buffer, r0.byteOffset, r0.byteLength);
+    const ascii = (a, o, l) => String.fromCharCode(...a.subarray(o, o + l));
+    const comp = d0.getUint16(0), nText = d0.getUint16(8);
+    if (d0.getUint16(12)) throw new Error('Este libro tiene protección (DRM) y no se puede leer.');
+    const isMobi = ascii(r0, 16, 4) === 'MOBI';
+    let enc = 1252, flags = 0, hl = 0, title = name, author = '', lang = '', cover = null;
+    if (isMobi) { hl = d0.getUint32(20); enc = d0.getUint32(28); if (hl >= 0xe4 && r0.length >= 0xf4) flags = d0.getUint16(0xf2); }
+    const dec = new TextDecoder(enc === 65001 ? 'utf-8' : 'windows-1252');
+    if (isMobi) {
+      const to = d0.getUint32(84), tl = d0.getUint32(88);
+      if (to && tl && to + tl <= r0.length) title = dec.decode(r0.subarray(to, to + tl)).trim() || title;
+      if ((d0.getUint32(128) & 0x40) && ascii(r0, 16 + hl, 4) === 'EXTH') {       // datos extra: autor, título, idioma, portada
+        let p = 16 + hl; const cnt = d0.getUint32(p + 8); p += 12; let coverAt = -1; const authors = [];
+        for (let i = 0; i < cnt && p + 8 <= r0.length; i++) {
+          const t = d0.getUint32(p), len = d0.getUint32(p + 4), data = r0.subarray(p + 8, p + len);
+          if (t === 100) authors.push(dec.decode(data).trim()); else if (t === 503) title = dec.decode(data).trim() || title;
+          else if (t === 524) lang = dec.decode(data).slice(0, 2).toLowerCase(); else if (t === 201 && data.length === 4) coverAt = new DataView(data.buffer, data.byteOffset, 4).getUint32(0);
+          if (len < 8) break; p += len;
+        }
+        author = authors.join(', ');
+        const fi = d0.getUint32(0x6c);
+        if (coverAt >= 0 && fi < n && fi + coverAt < n) { const im = rec(fi + coverAt); cover = new Blob([im], { type: im[0] === 0x89 ? 'image/png' : im[0] === 0x47 ? 'image/gif' : 'image/jpeg' }); }
+      }
+    }
+    const parts = []; let total = 0;
+    for (let i = 1; i <= nText && i < n; i++) {
+      let r = mobiTrim(rec(i), flags);
+      r = comp === 2 ? palmInflate(r) : comp === 1 ? r : null;
+      if (!r) throw new Error('Este libro de Kindle usa una compresión que no se puede leer. Conviértelo a ePub (por ejemplo con Calibre) y vuelve a probar.');
+      parts.push(r); total += r.length;
+    }
+    let all = new Uint8Array(total), o = 0;
+    for (const p of parts) { all.set(p, o); o += p.length; }
+    if (isMobi && d0.getUint32(36) === 8) {          // AZW3 (KF8): el texto del libro es el primer "flujo"; los demás son CSS, imágenes vectoriales, etc.
+      const fi = d0.getUint32(0xc0);
+      if (fi !== 0xffffffff && fi < n) {
+        const f = rec(fi);
+        if (f.length >= 20 && ascii(f, 0, 4) === 'FDST') { const end0 = new DataView(f.buffer, f.byteOffset, f.byteLength).getUint32(16); if (end0 > 0 && end0 <= all.length) all = all.subarray(0, end0); }
+      }
+    }
+    const html = dec.decode(all);
+    const secs = html.split(/<mbp:pagebreak\s*\/?>/i).map(s => Epub.blocksFromXhtml(s)).filter(b => b.length);
+    let blocks = secs.flat();
+    if (!blocks.some(b => b.kind === 'h') && secs.length >= 3) {      // sin títulos: cada salto de página es un capítulo
+      blocks = secs.flatMap((s, k) => s[0].text.length <= 80 ? [{ ...s[0], kind: 'h', level: 1 }, ...s.slice(1)] : [{ text: 'Sección ' + (k + 1), kind: 'h', level: 1 }, ...s]);
+    }
+    return { title, author, blocks, cover, language: lang };
+  }
+
+  /* ---------- reconocer el formato por su contenido (la extensión puede faltar o estar mal) ---------- */
+  async function detect(file, ext) {
+    const head = new Uint8Array(await file.slice(0, 512).arrayBuffer());
+    const a = String.fromCharCode(...head);
+    if (a.startsWith('%PDF')) return 'pdf';
+    if (a.startsWith('{\\rtf')) return 'rtf';
+    if (head[0] === 0x50 && head[1] === 0x4b) {          // ZIP: epub, docx, odt, fb2.zip, htmlz…
+      let names = []; try { names = (await Epub.readZip(file)).names(); } catch (e) { /* no es un ZIP legible */ }
+      if (names.includes('META-INF/container.xml')) return 'epub';
+      if (names.includes('word/document.xml')) return 'docx';
+      if (names.includes('content.xml')) return 'odt';
+      if (names.some(x => /\.fb2$/i.test(x))) return 'fb2zip';
+      if (names.some(x => /\.x?html?$/i.test(x))) return 'htmlz';
+      return ext;
+    }
+    if (a.slice(60, 68) === 'BOOKMOBI' || a.slice(60, 68) === 'TEXtREAd') return 'mobi';
+    if (a.startsWith('\xd0\xcf\x11\xe0')) return 'ole';
+    if (a.startsWith('AT&TFORM')) return 'djvu';
+    if (/<FictionBook/i.test(a)) return 'fb2';
+    return ext;
+  }
+  const UNSUPPORTED = 'Este formato no se puede leer directamente. Conviértelo a ePub, PDF, Word o texto (por ejemplo con Calibre) y vuelve a probar.';
+  const looksBinary = b => {
+    if ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)) return false;   // UTF-16
+    const n = Math.min(b.length, 4000); let bad = 0;
+    for (let i = 0; i < n; i++) if (b[i] === 0 || (b[i] < 9) || (b[i] > 13 && b[i] < 32 && b[i] !== 27)) bad++;
+    return n > 0 && bad / n > 0.05;
+  };
+
   /* ---------- entrada principal ---------- */
-  const EXT = /\.(epub|txt|text|md|markdown|html?|xhtml|docx|odt|rtf|pdf|csv|log)$/i;
+  const EXT = /\.(epub|kepub|txt|text|md|markdown|html?|xhtml|htmlz|docx|odt|rtf|pdf|fb2|fbz|mobi|azw3?|prc|csv|log)$/i;
   async function open(file) {
     const name = stripName(file.name || 'Texto');
     const ext = ((/\.([^.]+)$/.exec(file.name || '') || [])[1] || '').toLowerCase();
-    if (ext === 'epub' || file.type === 'application/epub+zip') { const d = await Epub.open(file); d.language = d.language || ''; return d; }
+    let kind = await detect(file, ext);
+    if (kind === 'kepub' || (kind === ext && file.type === 'application/epub+zip')) kind = 'epub';
+    if (kind === 'epub') { const d = await Epub.open(file); d.language = d.language || ''; return d; }
     const bytes = () => file.arrayBuffer().then(b => new Uint8Array(b));
     let doc;
-    if (ext === 'pdf' || file.type === 'application/pdf') doc = await pdfToDoc(file, name);
-    else if (ext === 'docx') doc = await docxToDoc(file, name);
-    else if (ext === 'odt') doc = await odtToDoc(file, name);
-    else if (ext === 'rtf') doc = { title: name, author: '', blocks: textToBlocks(rtfToText(decodeText(await bytes())), false) };
-    else if (/^html?$|^xhtml$/.test(ext) || file.type === 'text/html') doc = htmlToDoc(decodeText(await bytes()), name);
-    else if (ext === 'doc' || ext === 'pages' || ext === 'odp' || ext === 'xlsx') throw new Error('Este formato no se puede leer. Guárdalo como .docx, .pdf o .txt y vuelve a probar.');
-    else doc = { title: name, author: '', blocks: textToBlocks(decodeText(await bytes()), /^(md|markdown)$/.test(ext)) };
+    if (kind === 'pdf' || file.type === 'application/pdf') doc = await pdfToDoc(file, name);
+    else if (kind === 'docx') doc = await docxToDoc(file, name);
+    else if (kind === 'odt') doc = await odtToDoc(file, name);
+    else if (kind === 'rtf') doc = { title: name, author: '', blocks: textToBlocks(rtfToText(decodeText(await bytes())), false) };
+    else if (kind === 'mobi') doc = await mobiToDoc(file, name);
+    else if (kind === 'fb2') doc = fb2ToDoc(decodeXml(await bytes()), name);
+    else if (kind === 'fb2zip') { const z = await Epub.readZip(file); doc = fb2ToDoc(decodeXml(await z.get(z.names().find(x => /\.fb2$/i.test(x)))), name); }
+    else if (kind === 'htmlz') {
+      const z = await Epub.readZip(file), names = z.names().filter(x => /\.x?html?$/i.test(x));
+      doc = htmlToDoc(decodeText(await z.get(names.find(x => /(^|\/)index\.x?html?$/i.test(x)) || names[0])), name);
+    }
+    else if (/^(html?|xhtml)$/.test(kind) || file.type === 'text/html') doc = htmlToDoc(decodeText(await bytes()), name);
+    else if (/^(doc|ole|pages|odp|ods|xlsx|pptx|djvu?|cbz|cbr|lit|lrf|azw4|kfx|ibooks|zip|rar|7z)$/.test(kind)) throw new Error(UNSUPPORTED);
+    else {
+      const b = await bytes();
+      if (looksBinary(b)) throw new Error(UNSUPPORTED);
+      doc = { title: name, author: '', blocks: textToBlocks(decodeText(b), /^(md|markdown)$/.test(kind)) };
+    }
     if (!doc.blocks.length) throw new Error('No se encontró texto en este archivo.');
     const chapters = chapterize(doc.blocks, doc.title);
     const sample = chapters.slice(0, 3).map(c => c.blocks.map(b => b.text).join(' ')).join(' ');
-    return { title: doc.title, author: doc.author, language: guessLang(sample), cover: null, chapters };
+    return { title: doc.title, author: doc.author, language: doc.language || guessLang(sample), cover: doc.cover || null, chapters };
   }
 
   return { open, EXT, guessLang, _textToBlocks: textToBlocks, _chapterize: chapterize, _rtf: rtfToText, _pdfLines: pdfLines, _pdfParas: pdfParas, _pdfStrip: pdfStrip };

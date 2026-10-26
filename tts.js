@@ -6,17 +6,22 @@ const Voice = (() => {
     'https://esm.sh/@diffusionstudio/vits-web@1.0.3'
   ];
   const FALLBACK = ['es_ES-davefx-medium', 'es_ES-sharvard-medium', 'es_ES-carlfm-x_low'];
-  const GEMINI_VOICES = [
-    { id: 'gemini:Kore', label: 'Gemini · Kore · expresiva' },
-    { id: 'gemini:Charon', label: 'Gemini · Charon · grave y narrativa' },
-    { id: 'gemini:Aoede', label: 'Gemini · Aoede · clara y cálida' },
-    { id: 'gemini:Puck', label: 'Gemini · Puck · dinámica' },
-    { id: 'gemini:Orus', label: 'Gemini · Orus · serena' },
-    { id: 'gemini:Zephyr', label: 'Gemini · Zephyr · ligera' }
+  /* Las 30 voces de Gemini: [nombre, sexo, tono] */
+  const GEMINI_RAW = [
+    ['Kore', 'f', 'firme'], ['Charon', 'm', 'informativo'], ['Sulafat', 'f', 'cálido'], ['Achird', 'm', 'amistoso'], ['Gacrux', 'f', 'maduro'],
+    ['Zephyr', 'f', 'brillante'], ['Puck', 'm', 'alegre'], ['Aoede', 'f', 'desenfadado'], ['Orus', 'm', 'firme'], ['Fenrir', 'm', 'vivaz'],
+    ['Leda', 'f', 'juvenil'], ['Callirrhoe', 'f', 'relajado'], ['Autonoe', 'f', 'brillante'], ['Enceladus', 'm', 'susurrante'], ['Iapetus', 'm', 'claro'],
+    ['Umbriel', 'm', 'relajado'], ['Algieba', 'm', 'suave'], ['Despina', 'f', 'suave'], ['Erinome', 'f', 'claro'], ['Algenib', 'm', 'rasposo'],
+    ['Rasalgethi', 'm', 'informativo'], ['Laomedeia', 'f', 'alegre'], ['Achernar', 'f', 'delicado'], ['Alnilam', 'm', 'firme'], ['Schedar', 'm', 'uniforme'],
+    ['Pulcherrima', 'f', 'directo'], ['Zubenelgenubi', 'm', 'informal'], ['Vindemiatrix', 'f', 'amable'], ['Sadachbia', 'm', 'vivo'], ['Sadaltager', 'm', 'erudito']
   ];
-  const GEMINI_MODEL = 'gemini-2.5-flash-preview-tts';
-  const GEMINI_KEY_LS = 'lb-gemini-api-key';
-  let lib = null;
+  const GEMINI_VOICES = GEMINI_RAW.map(([n, g, d]) => ({ id: 'gemini:' + n, label: `${n} · ${g === 'f' ? 'mujer' : 'hombre'} · ${d}`, group: 'gemini' }));
+  /* Los modelos de voz de Gemini cambian a menudo: se descubren con la clave y estos sirven de reserva, por orden de preferencia. */
+  const GEMINI_PREF = ['gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview', 'gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'];
+  const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/';
+  const GEMINI_KEY_LS = 'lb-gemini-api-key', GEMINI_MODEL_LS = 'lb-gemini-model';
+  const GEMINI_MAX = 1500;   // caracteres por petición: Gemini interpreta mejor tramos largos que frases sueltas
+  let lib = null, foundModels = null, goodModel = null;
 
   function isGeminiVoice(id) {
     return typeof id === 'string' && /^gemini:/.test(id);
@@ -29,12 +34,40 @@ const Voice = (() => {
   }
   function setGeminiKey(key) {
     try { if (key) localStorage.setItem(GEMINI_KEY_LS, key.trim()); else localStorage.removeItem(GEMINI_KEY_LS); } catch (e) {}
+    foundModels = null; goodModel = null;
+  }
+  function getGeminiModel() { try { return localStorage.getItem(GEMINI_MODEL_LS) || ''; } catch (e) { return ''; } }
+  function setGeminiModel(m) {
+    try { if (m) localStorage.setItem(GEMINI_MODEL_LS, m); else localStorage.removeItem(GEMINI_MODEL_LS); } catch (e) {}
+    goodModel = null;
+  }
+  /* Modelos de voz que ofrece la clave del usuario (si no se puede consultar, la lista de reserva) */
+  async function geminiModels() {
+    if (foundModels) return foundModels;
+    const key = getGeminiKey();
+    if (!key) return GEMINI_PREF.slice();
+    foundModels = GEMINI_PREF.slice();
+    try {
+      const r = await fetch(GEMINI_API + 'models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json();
+      const names = (j.models || [])
+        .filter(m => /tts/i.test(m.name) && (!m.supportedGenerationMethods || m.supportedGenerationMethods.includes('generateContent')))
+        .map(m => m.name.replace(/^models\//, ''));
+      const rank = n => { const i = GEMINI_PREF.indexOf(n); return i < 0 ? 99 : i; };
+      if (names.length) foundModels = names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    } catch (e) { /* nos quedamos con la lista de reserva */ }
+    return foundModels;
+  }
+  async function modelChain() {
+    const all = await geminiModels();
+    return [...new Set([getGeminiModel() || goodModel, ...all, ...GEMINI_PREF].filter(Boolean))];
   }
   async function ensureGeminiKey() {
     let key = getGeminiKey();
     if (key) return key;
     if (typeof window === 'undefined' || !window.prompt) throw new Error('Falta la clave de Gemini. Añádela desde el navegador para usar voces Gemini.');
-    key = window.prompt('Ingresa tu API key de Google AI Studio para usar voces Gemini. Se guarda en este navegador.', '');
+    key = window.prompt('Pega tu clave de API de Google AI Studio para usar las voces Gemini. Se guarda solo en este navegador.', '');
     if (!key || !key.trim()) throw new Error('Se necesita una API key de Gemini para usar estas voces.');
     key = key.trim(); setGeminiKey(key); return key;
   }
@@ -54,9 +87,9 @@ const Voice = (() => {
     const m = /^es_([A-Z]{2})-(.+)-(x_low|low|medium|high)$/.exec(id);
     return m ? `${LABEL[m[1]] || m[1]} · ${m[2].replace(/_/g, ' ')} · calidad ${QUAL[m[3]]}` : id;
   }
-  async function spanishVoices() {
+  async function spanishVoices(quick) {   // quick: sin consultar el motor local (lista inmediata)
     let ids = [];
-    try {
+    if (!quick) try {
       const l = await load();
       const v = await l.voices();
       ids = Array.isArray(v) ? v.map(x => x.key || x.id || x.name) : Object.keys(v || {});
@@ -65,8 +98,8 @@ const Voice = (() => {
     if (!ids.length) ids = FALLBACK;
     const rank = id => /high/.test(id) ? 0 : /medium/.test(id) ? 1 : 2;
     ids.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-    const local = ids.map(id => ({ id, label: pretty(id) }));
-    return [...local, ...GEMINI_VOICES.map(v => ({ ...v, label: v.label }))];
+    const local = ids.map(id => ({ id, label: pretty(id), group: 'local' }));
+    return [...GEMINI_VOICES, ...local];
   }
   async function isStored(id) {
     if (isGeminiVoice(id)) return true;
@@ -78,40 +111,94 @@ const Voice = (() => {
     await l.download(id, p => { if (onProgress && p && p.total) onProgress(p.loaded / p.total); });
   }
 
-  async function synthGemini(text, id) {
-    const key = await ensureGeminiKey();
-    const voice = id.replace(/^gemini:/, '');
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: String(text || '').trim() || ' ' }] }],
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice }
-            }
-          }
-        }
-      })
-    });
-    if (!response.ok) {
-      let detail = `Error de Gemini (${response.status})`;
-      try { const data = await response.json(); detail = data?.error?.message || detail; } catch (e) {}
-      throw new Error(detail);
+  /* ---------- Gemini ---------- */
+  const cancelErr = () => { const e = new Error('Cancelado'); e.cancelled = true; return e; };
+  const gemErr = msg => { const e = new Error(msg); e.fatal = true; return e; };   // error que detiene la conversión (se puede continuar luego)
+
+  async function wait(sec, o, why) {
+    const end = Date.now() + sec * 1000;
+    while (Date.now() < end) {
+      if (o.cancelled && o.cancelled()) throw cancelErr();
+      if (o.onWait) o.onWait(`${why} Reintentando en ${Math.ceil((end - Date.now()) / 1000)} s…`);
+      await new Promise(r => setTimeout(r, 500));
     }
-    const body = await response.json();
-    const part = body?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.data);
-    if (!part) throw new Error('Gemini no devolvió audio. Comprueba que la voz sea compatible y la clave sea válida.');
-    const data = part.inlineData.data;
-    const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
-    return decodeWav(bytes);
+  }
+  async function errInfo(res) {
+    let raw = ''; try { raw = await res.text(); } catch (e) {}
+    let msg = `Error de Gemini (${res.status})`, retry = 0;
+    try {
+      const j = JSON.parse(raw); msg = (j.error && j.error.message) || msg;
+      const d = ((j.error && j.error.details) || []).find(x => x && x.retryDelay);
+      if (d) retry = parseFloat(d.retryDelay) || 0;
+    } catch (e) {}
+    if (!retry) { const m = /retry in ([\d.]+)s/i.exec(msg); if (m) retry = parseFloat(m[1]); }
+    return { raw, msg, retry };
+  }
+  function friendly(status, msg) {
+    if (/API key|API_KEY/i.test(msg)) return 'La clave de Gemini no es válida. Cámbiala con el botón de la clave en la pantalla de conversión.';
+    if (status === 403) return 'Gemini no admite esta clave (403). Revisa la clave y sus permisos en Google AI Studio.';
+    if (status === 401) return 'Gemini no reconoce la clave. Cámbiala con el botón de la clave en la pantalla de conversión.';
+    return msg;
+  }
+  /* Gemini devuelve PCM de 16 bits sin cabecera (audio/L16;rate=24000); si algún modelo envía un WAV, también se entiende. */
+  function audioFromGemini(inline) {
+    const bin = atob(inline.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    if (bytes.length > 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return decodeWav(bytes);
+    const m = /rate=(\d+)/i.exec(inline.mimeType || ''), rate = m ? +m[1] : 24000;
+    const n = bytes.length >> 1, dv = new DataView(bytes.buffer), s = new Float32Array(n);
+    for (let i = 0; i < n; i++) s[i] = dv.getInt16(i * 2, true) / 32768;
+    return { samples: s, rate };
+  }
+  /* La instrucción de estilo va delante del texto; es lo que da la entonación y la emoción */
+  function geminiPrompt(text, o) {
+    const how = !o.expr ? 'Lee en voz alta con naturalidad y un tono neutro'
+      : o.role === 'dial' ? 'Lee en voz alta como el personaje de un diálogo, con la emoción y la entonación que pide cada frase'
+        : 'Lee en voz alta como un narrador de audiolibros: entonación natural, emoción en los diálogos (preguntas, sorpresa, susurros, gritos, dudas) y pausas naturales';
+    return `${how}:\n\n${text}`;
   }
 
-  /* Texto -> {samples: Float32Array, rate} */
-  async function synth(text, id) {
-    if (isGeminiVoice(id)) return synthGemini(text, id);
+  async function synthGemini(text, id, o = {}) {
+    const key = await ensureGeminiKey();
+    const voice = id.replace(/^gemini:/, '');
+    const body = JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: geminiPrompt(String(text || '').trim() || ' ', o) }] }],
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+    });
+    let last = '';
+    for (const model of await modelChain()) {
+      let missing = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if (o.cancelled && o.cancelled()) throw cancelErr();
+        let res;
+        try {
+          res = await fetch(`${GEMINI_API}models/${model}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body });
+        } catch (e) { last = 'Sin conexión con Gemini.'; await wait(Math.min(30, 4 * (attempt + 1)), o, last); continue; }
+        if (res.ok) {
+          let j = null; try { j = await res.json(); } catch (e) {}
+          const part = j && j.candidates && j.candidates[0] && j.candidates[0].content && (j.candidates[0].content.parts || []).find(p => p.inlineData && p.inlineData.data);
+          if (part) { goodModel = model; return audioFromGemini(part.inlineData); }
+          last = 'Gemini no devolvió audio.';
+          await wait(2 + attempt * 2, o, last); continue;
+        }
+        const info = await errInfo(res);
+        if (res.status === 404 || (res.status === 400 && /not found|not supported|unsupported|no longer|deprecated/i.test(info.msg) && !/API key/i.test(info.msg))) { last = info.msg; missing = true; break; }   // ese modelo ya no existe: probamos otro
+        if (res.status === 429) {
+          if (/PerDay|per day|daily/i.test(info.raw)) throw gemErr('Se agotó la cuota diaria de Gemini. Continúa mañana desde el libro, o activa la facturación en Google AI Studio.');
+          last = 'Gemini pide esperar (límite por minuto).';
+          await wait(Math.min(90, (info.retry || 15) + 2), o, last); continue;
+        }
+        if (res.status >= 500) { last = info.msg; await wait(Math.min(30, 3 * (attempt + 1)), o, 'Gemini no responde.'); continue; }
+        throw gemErr(friendly(res.status, info.msg));
+      }
+      if (!missing) break;   // se agotaron los reintentos con este modelo
+    }
+    throw gemErr(`Gemini no pudo generar el audio. ${last}`.trim());
+  }
+
+  /* Texto -> {samples: Float32Array, rate}. o: { expr, role, cancelled, onWait } (solo para Gemini) */
+  async function synth(text, id, o = {}) {
+    if (isGeminiVoice(id)) return synthGemini(text, id, o);
     const l = await load();
     const out = await l.predict({ text, voiceId: id });
     const blob = out instanceof Blob ? out : new Blob([out], { type: 'audio/wav' });
@@ -268,5 +355,5 @@ const Voice = (() => {
     }
   }
 
-  return { spanishVoices, isStored, download, synth, createSink, load, isGeminiVoice, getGeminiKey, setGeminiKey };
+  return { spanishVoices, isStored, download, synth, createSink, load, isGeminiVoice, getGeminiKey, setGeminiKey, getGeminiModel, setGeminiModel, geminiModels, GEMINI_MAX };
 })();

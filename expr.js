@@ -123,5 +123,41 @@ const Expr = (() => {
     return o;
   }
 
-  return { plan, shape, runsOf, moodOf };
+  /* ---------- Gemini ----------
+     Su voz ya interpreta el texto (tono, emoción, pausas), así que no se le manda frase a frase ni se le toca el timbre:
+     se le dan párrafos enteros, con los diálogos tal cual, hasta llenar un tramo de `max` caracteres. */
+  function packText(t, max) {
+    const sents = t.match(/[^.!?]+(?:[.!?]+["'»”)\]]*|$)\s*/g) || [t];
+    const out = []; let cur = '';
+    for (const s of sents) { if (cur && (cur + s).length > max) { out.push(cur.trim()); cur = ''; } cur += s; }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  function planGemini(blocks, max = 1500) {
+    const out = []; let buf = '';
+    const flush = () => { if (/[\p{L}\p{N}]/u.test(buf)) out.push({ text: buf.trim(), pause: 0.45, role: 'narr', f: 1, g: 1 }); buf = ''; };
+    for (const b of blocks) {
+      const t = b.text.replace(/[]/g, '').replace(/\s+/g, ' ').trim();
+      if (!/[\p{L}\p{N}]/u.test(t)) continue;
+      for (const p of (t.length > max ? packText(t, max) : [t])) {
+        const piece = b.kind === 'h' && !/[.!?:]$/.test(p) ? p + '.' : p;   // el título termina en punto para que haga pausa
+        if (buf && buf.length + piece.length + 2 > max) flush();
+        buf += (buf ? '\n\n' : '') + piece;
+      }
+    }
+    flush();
+    return out;
+  }
+  /* Cuando narrador y diálogos tienen voces distintas: junta las frases seguidas del mismo papel (solo las que van a Gemini) */
+  function mergeRuns(items, canMerge, max = 1500) {
+    const out = [];
+    for (const it of items) {
+      const last = out[out.length - 1];
+      if (last && last.merge && canMerge(it) && last.role === it.role && last.text.length + it.text.length + 1 <= max) { last.text += ' ' + it.text; last.pause = it.pause; continue; }
+      out.push(canMerge(it) ? { ...it, f: 1, g: 1, merge: true } : it);
+    }
+    return out;
+  }
+
+  return { plan, shape, runsOf, moodOf, planGemini, mergeRuns };
 })();
