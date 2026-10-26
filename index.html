@@ -63,7 +63,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 #mini .mb{height:3px;background:var(--line)}
 #mini .mb i{display:block;height:100%;background:var(--accent);width:0}
 
-#player{position:fixed;inset:0;z-index:20;background:linear-gradient(180deg,#2a211b,var(--bg) 60%);transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:14px 16px calc(20px + env(safe-area-inset-bottom));}
+#player{position:fixed;inset:0;z-index:20;background:linear-gradient(180deg,#2a211b,var(--bg) 60%);transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:14px 16px calc(20px + env(safe-area-inset-bottom))}
 #player.open{transform:none}
 .pTop{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:13px;letter-spacing:.5px;text-transform:uppercase}
 .pTop button{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;color:var(--text)}
@@ -148,6 +148,15 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 .gemini-actions{display:flex;gap:8px;align-items:center;margin-top:8px}
 .gemini-actions .btn{padding:10px 12px;font-size:13px}
+.voice-box{margin:0 0 12px}
+.voice-stack{display:flex;gap:8px;align-items:flex-start}
+.voice-stack .sel{flex:1}
+.gemini-box{margin:8px 0 12px;border:1px solid rgba(245,166,35,.45);background:linear-gradient(135deg,rgba(245,166,35,.12),rgba(245,166,35,.04));border-radius:14px;padding:12px}
+.gemini-banner{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:var(--text);font-size:12px}
+.gemini-banner b{color:var(--accent)}
+.gemini-banner span{color:var(--muted)}
+.gemini-cta{background:linear-gradient(135deg,#f5a623,#e7b74d);color:#1a1209;box-shadow:0 10px 26px rgba(245,166,35,.25)}
+.gemini-badge{white-space:nowrap}
 </style>
 </head>
 <body>
@@ -867,14 +876,56 @@ function openEpub() {
       <label class="f">Autor<input id="eAuthor"></label>
       <div class="lbl">Capítulos a convertir</div><div class="chl" id="eList"></div>
       <p class="sum" id="eLang" style="color:var(--accent)" hidden></p>
-      <label class="f">Voz del narrador<select class="sel" id="eVoice"></select></label>
-      <div class="gemini-actions"><button class="btn ghost" id="eGeminiKey" type="button">Clave Gemini</button></div>
+      <div class="voice-box">
+        <label class="f" style="margin:0;">Voz del narrador</label>
+        <div class="voice-stack">
+          <select class="sel" id="eVoice"></select>
+          <button class="btn ghost gemini-badge" id="eGeminiKey" type="button">Clave Gemini</button>
+        </div>
+      </div>
+      <div class="gemini-box" id="geminiBox" hidden>
+        <div class="gemini-banner"><b>Voces Gemini</b><span>Más expresivas y naturales</span></div>
+        <button class="btn wide gemini-cta" id="eGeminiTest">▶ Probar voz Gemini</button>
+      </div>
       <label class="f">Voz de los diálogos<select class="sel" id="eVoiceD"></select></label>
       <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, grito, dudas…</small></span></label>
       <p class="sum" id="eSum"></p>
       <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
       <button class="btn wide" id="eGo">Empezar la conversión</button>
     </div>`, () => {
+    const isGeminiVoice = id => typeof id === 'string' && /^gemini:/.test(id);
+    const syncGeminiUi = () => {
+      const sel = $('#eVoice');
+      const active = sel && isGeminiVoice(sel.value);
+      const box = $('#geminiBox');
+      if (box) box.hidden = !active;
+      const keyBtn = $('#eGeminiKey');
+      if (keyBtn) keyBtn.textContent = Voice.getGeminiKey() ? 'Clave Gemini: OK' : 'Clave Gemini';
+    };
+    const testVoice = async (voiceId, intention = 'Prueba') => {
+      const btn = intention === 'Gemini' ? $('#eGeminiTest') : $('#eTest');
+      const id = voiceId || $('#eVoice').value;
+      const pair = $('#eVoiceD').value || id;
+      btn.disabled = true;
+      try {
+        for (const v of [...new Set([id, pair])]) {
+          if (!(await Voice.isStored(v))) await Voice.download(v, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
+        }
+        btn.textContent = intention === 'Gemini' ? 'Generando…' : 'Generando…';
+        const demo = [{ kind: 'p', text: 'Ella lo miró en silencio. Afuera llovía desde hacía horas.' },
+          { kind: 'p', text: '—¿De verdad? —preguntó ella.' }, { kind: 'p', text: '—¡Claro que sí! —gritó él—. Y no se lo digas a nadie... —añadió en voz baja.' },
+          { kind: 'p', text: '\uE000No puede ser verdad\uE001, pensó.' }];
+        const plan = $('#eExpr').checked ? Expr.plan(demo) : Epub.toChunks(demo).map(c => ({ ...c, role: 'narr', f: 1, g: 1 }));
+        const ac = new (window.AudioContext || window.webkitAudioContext)(); let t = ac.currentTime + 0.2;
+        for (const c of plan) {
+          const r = await Voice.synth(c.text, c.role === 'dial' ? pair : id), sm = Expr.shape(r.samples, c.g);
+          const buf = ac.createBuffer(1, sm.length, Math.round(r.rate * c.f)); buf.copyToChannel(sm, 0);
+          const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start(t); t += buf.duration + c.pause;
+        }
+      } catch (e) { toast(String(e.message || e).slice(0, 140)); }
+      btn.textContent = intention === 'Gemini' ? '▶ Probar voz Gemini' : '▶ Probar la voz';
+      btn.disabled = false;
+    };
     const fillVoices = async () => {
       const list = await Voice.spanishVoices(), sel = $('#eVoice');
       if (!sel) return;
@@ -885,8 +936,10 @@ function openEpub() {
       const sd = $('#eVoiceD'), savedD = lsGet('lb-voice-d');
       sd.innerHTML = '<option value="">La misma voz</option>' + opts;
       if (savedD && list.some(v => v.id === savedD)) sd.value = savedD;
+      sel.onchange = syncGeminiUi;
+      syncGeminiUi();
       const key = Voice.getGeminiKey();
-      $('#eGeminiKey').textContent = key ? 'Clave Gemini: activa' : 'Clave Gemini';
+      $('#eGeminiKey').textContent = key ? 'Clave Gemini: OK' : 'Clave Gemini';
     };
     const sum = () => {
       const boxes = [...document.querySelectorAll('#eList input:checked')];
@@ -928,29 +981,15 @@ function openEpub() {
       const trimmed = next.trim();
       if (!trimmed) { Voice.setGeminiKey(''); $('#eGeminiKey').textContent = 'Clave Gemini'; toast('Clave Gemini eliminada'); return; }
       Voice.setGeminiKey(trimmed);
-      $('#eGeminiKey').textContent = 'Clave Gemini: activa';
+      $('#eGeminiKey').textContent = 'Clave Gemini: OK';
       toast('Clave Gemini guardada');
     };
-    $('#eTest').onclick = async () => {
-      const btn = $('#eTest'), id = $('#eVoice').value, idD = $('#eVoiceD').value || id, ex = $('#eExpr').checked; btn.disabled = true;
-      try {
-        for (const v of [...new Set([id, idD])]) {
-          if (!(await Voice.isStored(v))) await Voice.download(v, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
-        }
-        btn.textContent = 'Generando…';
-        const demo = [{ kind: 'p', text: 'Ella lo miró en silencio. Afuera llovía desde hacía horas.' },
-          { kind: 'p', text: '—¿De verdad? —preguntó ella.' }, { kind: 'p', text: '—¡Claro que sí! —gritó él—. Y no se lo digas a nadie... —añadió en voz baja.' },
-          { kind: 'p', text: '\uE000No puede ser verdad\uE001, pensó.' }];
-        const plan = ex ? Expr.plan(demo) : Epub.toChunks(demo).map(c => ({ ...c, role: 'narr', f: 1, g: 1 }));
-        const ac = new (window.AudioContext || window.webkitAudioContext)(); let t = ac.currentTime + 0.2;
-        for (const c of plan) {
-          const r = await Voice.synth(c.text, c.role === 'dial' ? idD : id), sm = Expr.shape(r.samples, c.g);
-          const buf = ac.createBuffer(1, sm.length, Math.round(r.rate * c.f)); buf.copyToChannel(sm, 0);
-          const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); src.start(t); t += buf.duration + c.pause;
-        }
-      } catch (e) { toast(String(e.message || e).slice(0, 140)); }
-      btn.textContent = '▶ Probar la voz'; btn.disabled = false;
+    $('#eGeminiTest').onclick = async () => {
+      const voiceId = $('#eVoice').value;
+      if (!voiceId || !/^gemini:/.test(voiceId)) { toast('Selecciona primero una voz Gemini.'); return; }
+      await testVoice(voiceId, 'Gemini');
     };
+    $('#eTest').onclick = async () => { await testVoice($('#eVoice').value, 'General'); };
     $('#eGo').onclick = async () => {
       if (conv) { toast('Ya hay una conversión en marcha'); return; }
       const picks = [...document.querySelectorAll('#eList input:checked')].map(b => +b.value);
