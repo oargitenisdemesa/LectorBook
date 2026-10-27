@@ -284,6 +284,12 @@ const dbDelRange = (n, lo, hi) => req(store(n, 'readwrite').delete(IDBKeyRange.b
 /* Caché de audio ya generado por Gemini: si la conversión se corta (cuota, red, pantalla apagada), al continuar no se repiten las peticiones */
 const hash36 = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36) + s.length.toString(36); };
 const toI16 = f => { const o = new Int16Array(f.length); for (let i = 0; i < f.length; i++) o[i] = Math.max(-1, Math.min(1, f[i])) * 32767; return o; };
+/* Entrada y salida suaves (8 ms) en cada tramo: evita el "clic" al unir trozos de audio */
+const fadeEdges = (s, rate) => {
+  const n = Math.min(Math.round(rate * 0.008), s.length >> 1), o = new Float32Array(s);
+  for (let i = 0; i < n; i++) { const g = i / n; o[i] *= g; o[o.length - 1 - i] *= g; }
+  return o;
+};
 const fromI16 = a => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] / 32768; return o; };
 
 let books = [], filter = 'all', query = '';
@@ -808,7 +814,7 @@ function silentWav() {
   dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
   dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
   w(36, 'data'); dv.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 200), true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 6), true);   // ruido casi inaudible (±3 de 32768): mantiene la app despierta sin que se oiga nada
   return new Blob([dv.buffer], { type: 'audio/wav' });
 }
 async function keepAlive(on) {
@@ -870,7 +876,7 @@ async function runJob(book) {
           catch (e) { if (e.cancelled) break; if (e.fatal) throw e; if (t) failed++; }   // un error de Gemini detiene la conversión: se puede continuar luego
         }
         if (r && useCache && !fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
-        if (r) await sink.add(Expr.shape(r.samples, chunks[k].g), r.rate * chunks[k].f);
+        if (r) await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
       if (conv.cancel) break;
