@@ -1,5 +1,3 @@
-'use strict';
-/* Voz neuronal en el dispositivo (Piper vía @diffusionstudio/vits-web) + codificación a Opus/Ogg */
 const Voice = (() => {
   const LIB_URLS = [
     'https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm',
@@ -20,8 +18,45 @@ const Voice = (() => {
   const GEMINI_PREF = ['gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview', 'gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'];
   const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/';
   const GEMINI_KEY_LS = 'lb-gemini-api-key', GEMINI_MODEL_LS = 'lb-gemini-model';
-  const GEMINI_MAX = 1500;   // caracteres por petición: Gemini interpreta mejor tramos largos que frases sueltas
+  const MAX_LS = 'lb-gemini-max', GAP_LS = 'lb-gemini-gap', COUNT_LS = 'lb-gemini-count', DEAD_LS = 'lb-gemini-dead';
   let lib = null, foundModels = null, goodModel = null;
+
+  /* ---------- Ahorro de cuota ---------- */
+  const lsRead = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsWrite = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+  /* Caracteres por petición: menos peticiones = menos cuota. Gemini interpreta mejor tramos largos que frases sueltas. */
+  function getGeminiMax() { const v = parseInt(lsRead(MAX_LS), 10); return v >= 800 && v <= 8000 ? v : 3000; }
+  function setGeminiMax(v) { lsWrite(MAX_LS, String(v)); }
+  /* Segundos mínimos entre el inicio de una petición y la siguiente (el límite por minuto del plan gratuito es muy bajo) */
+  function getGeminiGap() { const v = parseFloat(lsRead(GAP_LS)); return v >= 0 && v <= 120 ? v : 15; }
+  function setGeminiGap(v) { lsWrite(GAP_LS, String(v)); paceGap = null; }
+  /* La cuota diaria de Google se reinicia a medianoche, hora del Pacífico */
+  const pacificDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+  function requestsToday() {
+    try { const c = JSON.parse(lsRead(COUNT_LS) || 'null'); return c && c.day === pacificDay() ? c.n : 0; } catch (e) { return 0; }
+  }
+  function countRequest() { lsWrite(COUNT_LS, JSON.stringify({ day: pacificDay(), n: requestsToday() + 1 })); }
+  /* Modelos cuya cuota diaria ya se agotó hoy: se saltan y se prueba el siguiente (cada modelo tiene su propia cuota) */
+  function deadModels() {
+    try { const d = JSON.parse(lsRead(DEAD_LS) || 'null'); return d && d.day === pacificDay() ? d.models : []; } catch (e) { return []; }
+  }
+  function markDead(model) { lsWrite(DEAD_LS, JSON.stringify({ day: pacificDay(), models: [...new Set([...deadModels(), model])] })); }
+  function resetDead() { lsWrite(DEAD_LS, JSON.stringify({ day: pacificDay(), models: [] })); }
+
+  /* Pausa adaptativa: sube cuando Gemini protesta (429) y baja poco a poco cuando todo va bien */
+  let paceNext = 0, paceGap = null;
+  async function pace(o) {
+    if (paceGap == null) paceGap = getGeminiGap();
+    const at = Math.max(Date.now(), paceNext);
+    paceNext = at + paceGap * 1000;
+    while (Date.now() < at) {
+      if (o.cancelled && o.cancelled()) throw cancelErr();
+      if (o.onWait) o.onWait(`Pausa para no pasar el límite de Gemini… ${Math.ceil((at - Date.now()) / 1000)} s`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  const paceSlower = () => { paceGap = Math.min(75, (paceGap || getGeminiGap()) * 1.6 + 4); };
+  const paceFaster = () => { paceGap = Math.max(getGeminiGap(), (paceGap || 0) * 0.92); };
 
   function isGeminiVoice(id) {
     return typeof id === 'string' && /^gemini:/.test(id);
@@ -34,7 +69,7 @@ const Voice = (() => {
   }
   function setGeminiKey(key) {
     try { if (key) localStorage.setItem(GEMINI_KEY_LS, key.trim()); else localStorage.removeItem(GEMINI_KEY_LS); } catch (e) {}
-    foundModels = null; goodModel = null;
+    foundModels = null; goodModel = null; resetDead();   // otra clave = otro proyecto = otra cuota
   }
   function getGeminiModel() { try { return localStorage.getItem(GEMINI_MODEL_LS) || ''; } catch (e) { return ''; } }
   function setGeminiModel(m) {
@@ -61,7 +96,8 @@ const Voice = (() => {
   }
   async function modelChain() {
     const all = await geminiModels();
-    return [...new Set([getGeminiModel() || goodModel, ...all, ...GEMINI_PREF].filter(Boolean))];
+    const dead = deadModels();
+    return [...new Set([getGeminiModel() || goodModel, ...all, ...GEMINI_PREF].filter(Boolean))].filter(m => !dead.includes(m));
   }
   async function ensureGeminiKey() {
     let key = getGeminiKey();
@@ -165,34 +201,42 @@ const Voice = (() => {
       contents: [{ role: 'user', parts: [{ text: geminiPrompt(String(text || '').trim() || ' ', o) }] }],
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
     });
-    let last = '';
-    for (const model of await modelChain()) {
-      let missing = false;
-      for (let attempt = 0; attempt < 8; attempt++) {
+    let last = '', dailyHit = false;
+    const chain = await modelChain();
+    if (!chain.length) dailyHit = true;
+    for (const model of chain) {
+      let missing = false, exhausted = false;
+      for (let attempt = 0; attempt < 6; attempt++) {
         if (o.cancelled && o.cancelled()) throw cancelErr();
+        await pace(o);
         let res;
         try {
+          countRequest();
           res = await fetch(`${GEMINI_API}models/${model}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body });
         } catch (e) { last = 'Sin conexión con Gemini.'; await wait(Math.min(30, 4 * (attempt + 1)), o, last); continue; }
         if (res.ok) {
           let j = null; try { j = await res.json(); } catch (e) {}
           const part = j && j.candidates && j.candidates[0] && j.candidates[0].content && (j.candidates[0].content.parts || []).find(p => p.inlineData && p.inlineData.data);
-          if (part) { goodModel = model; return audioFromGemini(part.inlineData); }
+          if (part) { goodModel = model; paceFaster(); return audioFromGemini(part.inlineData); }
           last = 'Gemini no devolvió audio.';
           await wait(2 + attempt * 2, o, last); continue;
         }
         const info = await errInfo(res);
         if (res.status === 404 || (res.status === 400 && /not found|not supported|unsupported|no longer|deprecated/i.test(info.msg) && !/API key/i.test(info.msg))) { last = info.msg; missing = true; break; }   // ese modelo ya no existe: probamos otro
         if (res.status === 429) {
-          if (/PerDay|per day|daily/i.test(info.raw)) throw gemErr('Se agotó la cuota diaria de Gemini. Continúa mañana desde el libro, o activa la facturación en Google AI Studio.');
+          if (/PerDay|per day|daily/i.test(info.raw)) { markDead(model); dailyHit = true; exhausted = true; last = info.msg; break; }   // cuota diaria de ESTE modelo: probamos otro
           last = 'Gemini pide esperar (límite por minuto).';
-          await wait(Math.min(90, (info.retry || 15) + 2), o, last); continue;
+          paceSlower();
+          const w = Math.min(90, Math.max(info.retry || 0, paceGap) + 2);
+          paceNext = Date.now() + w * 1000;
+          await wait(w, o, last); continue;
         }
         if (res.status >= 500) { last = info.msg; await wait(Math.min(30, 3 * (attempt + 1)), o, 'Gemini no responde.'); continue; }
         throw gemErr(friendly(res.status, info.msg));
       }
-      if (!missing) break;   // se agotaron los reintentos con este modelo
+      if (!missing && !exhausted) break;   // se agotaron los reintentos con este modelo
     }
+    if (dailyHit) throw gemErr('Se agotó la cuota diaria de Gemini (en todos los modelos disponibles). Se reinicia sobre las 8:00–9:00 de la mañana (hora de España). Lo ya convertido queda guardado: continúa entonces desde el libro, o activa la facturación en Google AI Studio.');
     throw gemErr(`Gemini no pudo generar el audio. ${last}`.trim());
   }
 
@@ -355,5 +399,6 @@ const Voice = (() => {
     }
   }
 
-  return { spanishVoices, isStored, download, synth, createSink, load, isGeminiVoice, getGeminiKey, setGeminiKey, getGeminiModel, setGeminiModel, geminiModels, GEMINI_MAX };
+  return { spanishVoices, isStored, download, synth, createSink, load, isGeminiVoice, getGeminiKey, setGeminiKey, getGeminiModel, setGeminiModel, geminiModels,
+    get GEMINI_MAX() { return getGeminiMax(); }, getGeminiMax, setGeminiMax, getGeminiGap, setGeminiGap, requestsToday, resetDead };
 })();
