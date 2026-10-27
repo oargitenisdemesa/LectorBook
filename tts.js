@@ -1,3 +1,5 @@
+'use strict';
+/* Voz neuronal en el dispositivo (Piper vía @diffusionstudio/vits-web) + codificación a Opus/Ogg */
 const Voice = (() => {
   const LIB_URLS = [
     'https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm',
@@ -186,12 +188,14 @@ const Voice = (() => {
     for (let i = 0; i < n; i++) s[i] = dv.getInt16(i * 2, true) / 32768;
     return { samples: s, rate };
   }
+  /* Las voces de Gemini no traen acento fijo: se pide en la instrucción (español de España, nunca latino) */
+  const ACCENT = 'Si el texto está en español, pronúncialo con acento de España (castellano peninsular, con distinción de "z" y "c" suaves como en Madrid), nunca con acento latinoamericano, mexicano, argentino ni neutro de doblaje';
   /* La instrucción de estilo va delante del texto; es lo que da la entonación y la emoción */
   function geminiPrompt(text, o) {
     const how = !o.expr ? 'Lee en voz alta con naturalidad y un tono neutro'
       : o.role === 'dial' ? 'Lee en voz alta como el personaje de un diálogo, con la emoción y la entonación que pide cada frase'
         : 'Lee en voz alta como un narrador de audiolibros: entonación natural, emoción en los diálogos (preguntas, sorpresa, susurros, gritos, dudas) y pausas naturales';
-    return `${how}:\n\n${text}`;
+    return `${how}. ${ACCENT}:\n\n${text}`;
   }
 
   async function synthGemini(text, id, o = {}) {
