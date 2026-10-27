@@ -177,7 +177,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 
 <main>
   <div id="conv" hidden>
-    <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button></div>
+    <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button><button class="btn danger" id="convDel">Eliminar</button></div>
     <div class="cb"><i id="convBar"></i></div>
     <small>Puedes apagar la pantalla: la app intenta seguir convirtiendo. Si se interrumpe, continúa desde el libro.</small>
   </div>
@@ -351,9 +351,20 @@ $('#grid').addEventListener('click', e => {
   const c = e.target.closest('.card'); if (!c) return;
   const b = books.find(x => x.id === c.dataset.id);
   if (b && !b.tracks.length) {
-    if (conv && conv.book === b) toast('Se está convirtiendo el primer capítulo…');
-    else if (b.job && b.job.queue && b.job.queue.length && confirm('Este libro aún no tiene audio. ¿Continuar la conversión?')) runJob(b);
-    else if (b.job && !(b.job.queue && b.job.queue.length)) openChapters(b);
+    const running = conv && conv.book === b, pending = b.job && b.job.queue && b.job.queue.length;
+    sheet(b.title, `<p class="sum">Este libro aún no tiene audio.</p>` +
+      (running ? '<button class="li" data-a="stop"><div class="n"><b>Detener la conversión</b></div></button>'
+        : pending ? '<button class="li" data-a="resume"><div class="n"><b>Continuar la conversión</b></div></button>' : '') +
+      (b.job && b.job.all && b.job.all.length ? '<button class="li" data-a="chapters"><div class="n"><b>Elegir capítulos</b></div></button>' : '') +
+      '<button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar este libro</b></div></button>', body => {
+      body.onclick = e => {
+        const x = e.target.closest('[data-a]'); if (!x) return;
+        if (x.dataset.a === 'stop') { closeSheet(); if (conv && conv.book === b) conv.cancel = true; }
+        else if (x.dataset.a === 'resume') { closeSheet(); runJob(b); }
+        else if (x.dataset.a === 'chapters') openChapters(b);
+        else if (x.dataset.a === 'del') deleteBook(b);
+      };
+    });
     return;
   }
   openBook(c.dataset.id, { play: true });
@@ -732,19 +743,23 @@ async function restartBook() {
 async function markDone() {
   audio.pause(); cur.finished = true; await dbPut('books', cur); closeSheet(); renderAll(); renderPlayer();
 }
-async function deleteBook() {
-  if (!confirm(`¿Eliminar «${cur.title}» de la biblioteca? Se borrarán sus audios de este dispositivo.`)) return;
-  const b = cur;
-  if (conv && conv.book === b) conv.cancel = true;
-  audio.pause(); audio.removeAttribute('src'); audio.load(); loadedId = null;
-  if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
+async function deleteBook(b = cur) {
+  if (!b) return;
+  if (!confirm(`¿Eliminar «${b.title}» de la biblioteca? Se borrarán sus audios y lo convertido hasta ahora de este dispositivo.`)) return;
+  if (conv && conv.book === b) { conv.cancel = true; conv.deleted = true; }
+  const wasCur = cur === b;
+  if (wasCur || loadedId === b.id) {
+    audio.pause(); audio.removeAttribute('src'); audio.load(); loadedId = null;
+    if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
+  }
   for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.tracks[i].key || b.id + ':' + i);
   await dbDel('files', b.id + ':epub').catch(() => {});
   await dbDelRange('files', b.id + ':g:', b.id + ':g:\uffff').catch(() => {});
   await dbDel('books', b.id);
   books = books.filter(x => x.id !== b.id);
   if (coverUrls[b.id]) { URL.revokeObjectURL(coverUrls[b.id]); delete coverUrls[b.id]; }
-  cur = lastBook(); closeSheet(); showPlayer(false); renderAll(); toast('Libro eliminado');
+  if (wasCur) { cur = lastBook(); showPlayer(false); }
+  closeSheet(); renderAll(); toast('Libro eliminado');
 }
 
 function setMediaSession() {
@@ -775,6 +790,7 @@ function showConv(msg, frac) {
 }
 function stopConv() { if (conv) { conv.cancel = true; $('#convMsg').textContent = 'Deteniendo…'; } }
 $('#convStop').onclick = stopConv;
+$('#convDel').onclick = () => { if (conv) deleteBook(conv.book); };
 async function keepAwake() {
   try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
 }
@@ -853,7 +869,7 @@ async function runJob(book) {
           try { r = await Voice.synth(chunks[k].text, vid, so); }
           catch (e) { if (e.cancelled) break; if (e.fatal) throw e; if (t) failed++; }   // un error de Gemini detiene la conversión: se puede continuar luego
         }
-        if (r && useCache && !fromCache) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
+        if (r && useCache && !fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
         if (r) await sink.add(Expr.shape(r.samples, chunks[k].g), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
@@ -874,7 +890,7 @@ async function runJob(book) {
       if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
     }
     if (!job.queue.length) toast(failed ? `Conversión terminada (${failed} frases no se pudieron leer)` : 'Capítulos convertidos');
-    else if (conv.cancel) toast('Conversión detenida. Puedes continuarla desde el libro.');
+    else if (conv.cancel && !conv.deleted) toast('Conversión detenida. Puedes continuarla desde el libro.');
   } catch (e) {
     toast(String(e.message || e).slice(0, 160), 7000);
   } finally {
@@ -904,7 +920,9 @@ function openEpub() {
     <div id="eRest" hidden>
       <label class="f">Título<input id="eTitle"></label>
       <label class="f">Autor<input id="eAuthor"></label>
-      <div class="lbl">Capítulos a convertir</div><div class="chl" id="eList"></div>
+      <div class="lbl">Capítulos a convertir</div>
+      <div class="addrow" style="margin:6px 0 0"><button class="btn ghost" id="eAll" type="button">Seleccionar todos</button><button class="btn ghost" id="eNone" type="button">Quitar todos</button></div>
+      <div class="chl" id="eList"></div>
       <p class="sum" id="eLang" style="color:var(--accent)" hidden></p>
       <label class="f">Voz del narrador<select class="sel" id="eVoice"></select></label>
       <label class="f">Voz de los diálogos<select class="sel" id="eVoiceD"></select></label>
@@ -1034,6 +1052,9 @@ function openEpub() {
     };
 
     $('#eFile').onchange = () => { const f = $('#eFile').files[0]; if (f) loadFile(f); };
+    const setAll = v => { document.querySelectorAll('#eList input').forEach(i => { i.checked = v; }); sum(); };
+    $('#eAll').onclick = () => setAll(true);
+    $('#eNone').onclick = () => setAll(false);
     $('#eGeminiKey').onclick = askKey;
     $('#eGemModel').onchange = () => Voice.setGeminiModel($('#eGemModel').value);
     const fillLimits = () => {
@@ -1080,9 +1101,13 @@ function migrateJob(b) {
 function openChapters(book = cur) {
   const list = (book.job && book.job.all ? book.job.all : []).map((c, i) => ({ ...c, idx: i }));
   if (!list.length) return;
-  sheet('Capítulos del libro', `<div class="chl">${list.map(c => `<label><input type="checkbox" value="${c.i}" ${book.tracks.some(t => t.ch === c.i) ? 'checked' : ''}><span>${esc(c.title)}</span></label>`).join('')}</div><button class="btn wide" id="chapSave">Guardar selección</button>`, body => {
+  sheet('Capítulos del libro', `<div class="addrow"><button class="btn ghost" id="chapAll" type="button">Seleccionar todos</button><button class="btn ghost" id="chapNone" type="button">Quitar todos</button></div><div class="chl">${list.map(c => `<label><input type="checkbox" value="${c.i}" ${book.tracks.some(t => t.ch === c.i) ? 'checked' : ''}><span>${esc(c.title)}</span></label>`).join('')}</div><button class="btn wide" id="chapSave">Guardar selección</button>`, body => {
+    const setAllChap = v => document.querySelectorAll('#sheetBody .chl input').forEach(i => { i.checked = v; });
+    $('#chapAll').onclick = () => setAllChap(true);
+    $('#chapNone').onclick = () => setAllChap(false);
     $('#chapSave').onclick = async () => {
-      const sel = [...document.querySelectorAll('#sheetBody input:checked')].map(i => +i.value);
+      const sel = [...document.querySelectorAll('#sheetBody .chl input:checked')].map(i => +i.value);
+      if (!sel.length) { toast('Elige al menos un capítulo'); return; }
       book.job = book.job || { voice: 'es_ES-davefx-medium', voiceDial: '', expr: true, all: [], queue: [] };
       book.job.all = sel.map(i => ({ i, title: book.job.all.find(a => a.i === i)?.title || `Capítulo ${i + 1}`, chars: 0 }));
       book.job.queue = [...sel];
