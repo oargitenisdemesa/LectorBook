@@ -280,6 +280,11 @@ const dbPut = (n, v, k) => req(k === undefined ? store(n, 'readwrite').put(v) : 
 const dbGet = (n, k) => req(store(n).get(k));
 const dbAll = n => req(store(n).getAll());
 const dbDel = (n, k) => req(store(n, 'readwrite').delete(k));
+const dbDelRange = (n, lo, hi) => req(store(n, 'readwrite').delete(IDBKeyRange.bound(lo, hi)));
+/* Caché de audio ya generado por Gemini: si la conversión se corta (cuota, red, pantalla apagada), al continuar no se repiten las peticiones */
+const hash36 = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36) + s.length.toString(36); };
+const toI16 = f => { const o = new Int16Array(f.length); for (let i = 0; i < f.length; i++) o[i] = Math.max(-1, Math.min(1, f[i])) * 32767; return o; };
+const fromI16 = a => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] / 32768; return o; };
 
 let books = [], filter = 'all', query = '';
 let cur = null, loadedId = null, curUrl = null;
@@ -735,6 +740,7 @@ async function deleteBook() {
   if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
   for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.tracks[i].key || b.id + ':' + i);
   await dbDel('files', b.id + ':epub').catch(() => {});
+  await dbDelRange('files', b.id + ':g:', b.id + ':g:\uffff').catch(() => {});
   await dbDel('books', b.id);
   books = books.filter(x => x.id !== b.id);
   if (coverUrls[b.id]) { URL.revokeObjectURL(coverUrls[b.id]); delete coverUrls[b.id]; }
@@ -829,15 +835,25 @@ async function runJob(book) {
       const sink = await Voice.createSink();
       const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
       const label = `Capítulo ${rank} de ${job.all.length}`;
+      const usesGem = [job.voice, job.voiceDial].some(v => v && Voice.isGeminiVoice(v));
+      const usage = () => usesGem ? ` · ${Voice.requestsToday()} peticiones hoy` : '';
+      const cacheKeys = [];
       for (let k = 0; k < chunks.length && !conv.cancel; k++) {
-        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
-        let r = null;
+        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%${usage()}`, (made + k / chunks.length) / (made + job.queue.length));
+        let r = null, fromCache = false;
         const vid = voiceFor(chunks[k], job);
-        const so = { expr: job.expr === true, role: chunks[k].role, cancelled: () => conv.cancel, onWait: m => showConv(`${label} · ${m}`) };
+        const so = { expr: job.expr === true, role: chunks[k].role, cancelled: () => conv.cancel, onWait: m => showConv(`${label} · ${m}${usage()}`) };
+        const useCache = Voice.isGeminiVoice(vid);
+        const ck = book.id + ':g:' + ci + ':' + k + ':' + hash36(chunks[k].text + '|' + vid + '|' + so.expr + '|' + chunks[k].role);
+        if (useCache) {
+          cacheKeys.push(ck);
+          try { const c = await dbGet('files', ck); if (c && c.pcm) { r = { samples: fromI16(c.pcm), rate: c.rate }; fromCache = true; } } catch (e) {}
+        }
         for (let t = 0; t < 2 && !r; t++) {
           try { r = await Voice.synth(chunks[k].text, vid, so); }
           catch (e) { if (e.cancelled) break; if (e.fatal) throw e; if (t) failed++; }   // un error de Gemini detiene la conversión: se puede continuar luego
         }
+        if (r && useCache && !fromCache) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
         if (r) await sink.add(Expr.shape(r.samples, chunks[k].g), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
@@ -846,6 +862,7 @@ async function runJob(book) {
       if (conv.cancel) break;
       const key = book.id + ':c' + ci;
       await dbPut('files', out.blob, key);
+      for (const ck of cacheKeys) await dbDel('files', ck).catch(() => {});   // el capítulo ya está hecho: se libera la caché temporal
       let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;
       if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
       book.tracks.splice(at, 0, { name: ch.title, duration: out.seconds, key, ch: ci });
@@ -894,6 +911,20 @@ function openEpub() {
       <div class="gemini-box" id="geminiBox" hidden>
         <div class="gemini-banner"><b>Voces Gemini</b><span>Naturales y expresivas · necesitan internet</span></div>
         <label class="f" style="margin:0 0 8px">Modelo de voz<select class="sel" id="eGemModel"></select></label>
+        <label class="f" style="margin:0 0 8px">Texto por petición (menos peticiones = menos cuota)
+          <select class="sel" id="eGemMax">
+            <option value="1500">1.500 caracteres · más peticiones</option>
+            <option value="3000">3.000 caracteres · equilibrado (recomendado)</option>
+            <option value="5000">5.000 caracteres · ahorra más cuota</option>
+          </select></label>
+        <label class="f" style="margin:0 0 8px">Pausa entre peticiones
+          <select class="sel" id="eGemGap">
+            <option value="8">Corta (8 s)</option>
+            <option value="15">Normal (15 s)</option>
+            <option value="30">Prudente (30 s)</option>
+            <option value="60">Muy prudente (60 s)</option>
+          </select></label>
+        <p class="sum" style="margin:0 0 8px" id="eGemUse"></p>
         <button class="btn ghost wide" id="eGeminiKey" type="button">Introducir clave de Gemini</button>
         <p class="sum" style="margin:8px 0 0">El texto se envía a Google para generar el audio. En el plan gratuito de Gemini hay límites; si se agotan, la conversión se detiene y puedes continuarla después desde el libro. Con «La misma voz» en los diálogos se hacen muchas menos peticiones: Gemini ya interpreta por sí solo a cada personaje.</p>
       </div>
@@ -1005,6 +1036,15 @@ function openEpub() {
     $('#eFile').onchange = () => { const f = $('#eFile').files[0]; if (f) loadFile(f); };
     $('#eGeminiKey').onclick = askKey;
     $('#eGemModel').onchange = () => Voice.setGeminiModel($('#eGemModel').value);
+    const fillLimits = () => {
+      $('#eGemMax').value = String(Voice.getGeminiMax()); if (!$('#eGemMax').value) $('#eGemMax').value = '3000';
+      $('#eGemGap').value = String(Voice.getGeminiGap()); if (!$('#eGemGap').value) $('#eGemGap').value = '15';
+      const n = Voice.requestsToday();
+      $('#eGemUse').textContent = `Peticiones enviadas hoy desde esta app: ${n}. La cuota diaria se reinicia sobre las 8:00–9:00 (hora de España). Lo ya generado se guarda, así que al continuar no se repite.`;
+    };
+    $('#eGemMax').onchange = () => Voice.setGeminiMax(+$('#eGemMax').value);
+    $('#eGemGap').onchange = () => Voice.setGeminiGap(+$('#eGemGap').value);
+    fillLimits();
     $('#eTest').onclick = testVoice;
     $('#eGo').onclick = async () => {
       if (conv) { toast('Ya hay una conversión en marcha'); return; }
