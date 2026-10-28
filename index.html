@@ -164,6 +164,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 <header>
   <div class="top">
     <h1>Lector <span>Book</span></h1>
+    <button id="dirBtn" class="btn ghost" aria-label="Carpeta de audios" title="Carpeta de audios">📁</button>
     <button id="install" class="btn ghost" hidden>Instalar</button>
     <button id="addBtn" class="btn">+ Añadir</button>
   </div>
@@ -735,12 +736,13 @@ $('#pMore').onclick = () => {
   sheet('Opciones del libro', chaps + extra + `
     <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
     <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
+    <button class="li" data-a="folder"><div class="n"><b>Carpeta de audios</b><span>${dirHandle ? 'Guardando en «' + esc(dirHandle.name) + '»' : 'Sin carpeta elegida'}</span></div></button>
     <button class="li" data-a="restart"><div class="n"><b>Empezar de nuevo</b></div></button>
     <button class="li" data-a="done"><div class="n"><b>Marcar como terminado</b></div></button>
     <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
     body.onclick = e => {
       const b = e.target.closest('[data-a]'); if (!b) return;
-      ({ edit: editBook, cover: changeCover, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, chapters: () => openChapters(), stop: () => { closeSheet(); if (conv && conv.book === cur) { conv.cancel = true; } } }[b.dataset.a])();
+      ({ edit: editBook, cover: changeCover, folder: openFolder, restart: restartBook, done: markDone, del: deleteBook, resume: () => { closeSheet(); runJob(cur); }, chapters: () => openChapters(), stop: () => { closeSheet(); if (conv && conv.book === cur) { conv.cancel = true; } } }[b.dataset.a])();
     };
   });
 };
@@ -802,6 +804,101 @@ function setMediaSession() {
   h('nexttrack', () => nextTrack(!audio.paused));
   h('seekto', d => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
 }
+
+/* Carpeta de destino para los audios convertidos (File System Access API: Chrome/Edge en Android y escritorio).
+   El acceso a la carpeta se guarda en IndexedDB; al reabrir la app el navegador puede volver a pedir permiso (un toque en «Permitir»). */
+const hasDirApi = typeof window.showDirectoryPicker === 'function';
+let dirHandle = null;
+const safeName = s => String(s || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Sin título';
+async function loadDir() { try { dirHandle = (await dbGet('files', 'cfg:dir')) || null; } catch (e) { dirHandle = null; } }
+async function dirReady(ask) {
+  if (!dirHandle) return false;
+  try {
+    const o = { mode: 'readwrite' };
+    if ((await dirHandle.queryPermission(o)) === 'granted') return true;
+    return !!ask && (await dirHandle.requestPermission(o)) === 'granted';
+  } catch (e) { return false; }
+}
+async function chooseDir() {
+  if (!hasDirApi) { toast('Este navegador no permite elegir carpeta. Usa «Guardar ahora» para descargar los audios.', 6000); return false; }
+  try {
+    const h = await window.showDirectoryPicker({ id: 'lectorbook', mode: 'readwrite', startIn: 'music' });
+    dirHandle = h; await dbPut('files', h, 'cfg:dir');
+    // al cambiar de carpeta, lo ya guardado en la anterior se considera pendiente para la nueva (se copia con «Guardar ahora»)
+    for (const b of books) { let ch = false; b.tracks.forEach(t => { if (t.saved) { delete t.saved; ch = true; } }); if (ch) await dbPut('books', b); }
+    toast(`Carpeta elegida: ${h.name}`); return true;
+  } catch (e) {
+    if (!e || e.name !== 'AbortError') toast('No se pudo usar esa carpeta. Crea una nueva (p. ej. «Audiolibros») y elígela.', 6000);
+    return false;
+  }
+}
+async function extOf(b) {
+  try {
+    const u = new Uint8Array(await b.slice(0, 12).arrayBuffer()), s = String.fromCharCode(...u);
+    if (s.startsWith('RIFF')) return 'wav';
+    if (s.startsWith('OggS')) return 'ogg';
+    if (s.startsWith('fLaC')) return 'flac';
+    if (s.slice(4, 8) === 'ftyp') return 'm4a';
+    if (s.startsWith('ID3') || (u[0] === 0xFF && (u[1] & 0xE0) === 0xE0)) return 'mp3';
+  } catch (e) {}
+  return 'wav';
+}
+const rankOf = (book, t, i) => {
+  const k = book.job && book.job.all && t.ch != null ? book.job.all.findIndex(a => a.i === t.ch) : -1;
+  return k >= 0 ? k + 1 : i + 1;
+};
+const trackFileName = async (book, t, rank, blob) => `${String(rank).padStart(2, '0')} - ${safeName(t.name)}.${await extOf(blob)}`;
+async function saveToDir(book, t, blob, rank) {
+  if (!(await dirReady(false))) return false;
+  try {
+    const sub = await dirHandle.getDirectoryHandle(safeName(book.title), { create: true });
+    const name = await trackFileName(book, t, rank, blob);
+    const w = await (await sub.getFileHandle(name, { create: true })).createWritable();
+    await w.write(blob); await w.close();
+    t.saved = name;
+    return true;
+  } catch (e) { return false; }
+}
+async function exportBook(book) {
+  const todo = book.tracks.map((t, i) => ({ t, i })).filter(x => !x.t.saved);
+  if (!todo.length) { toast('Todo está ya en la carpeta'); return; }
+  if (hasDirApi) {
+    if (!dirHandle && !(await chooseDir())) return;
+    if (!(await dirReady(true))) { toast('Sin permiso para escribir en la carpeta. Vuelve a intentarlo y pulsa «Permitir».', 6000); return; }
+  }
+  let n = 0;
+  for (const { t, i } of todo) {
+    const blob = await dbGet('files', t.key || book.id + ':' + i);
+    if (!blob) continue;
+    const rank = rankOf(book, t, i);
+    if (hasDirApi) { if (await saveToDir(book, t, blob, rank)) n++; }
+    else {
+      const a = document.createElement('a'), u = URL.createObjectURL(blob);
+      a.href = u; a.download = await trackFileName(book, t, rank, blob); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 30000); n++;
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  await dbPut('books', book);
+  toast(hasDirApi ? `${n} ${n === 1 ? 'audio guardado' : 'audios guardados'} en la carpeta` : `${n} ${n === 1 ? 'audio descargado' : 'audios descargados'}`);
+}
+function openFolder() {
+  const pend = cur ? cur.tracks.filter(t => !t.saved).length : 0;
+  sheet('Carpeta de audios',
+    `<p class="sum">${!hasDirApi ? 'Este navegador no permite elegir carpeta; puedes descargar los audios uno a uno.'
+      : dirHandle ? `Carpeta actual: <b>${esc(dirHandle.name)}</b>. Cada capítulo se guarda ahí, en una subcarpeta con el título del libro, nada más convertirse. Puedes cambiarla cuando quieras: los capítulos siguientes irán a la nueva.`
+      : 'Aún no has elegido carpeta. Los audios se guardan solo dentro de la app. Elige una para que cada capítulo se copie también al móvil.'}</p>` +
+    (hasDirApi ? `<button class="btn wide" id="dirPick">${dirHandle ? 'Cambiar carpeta' : 'Elegir carpeta'}</button>` : '') +
+    (cur && cur.tracks.length ? `<button class="btn wide ghost" id="dirSave">${hasDirApi ? 'Guardar ahora' : 'Descargar'} los audios de «${esc(cur.title)}»${hasDirApi ? ` (${pend} pendientes)` : ''}</button>` : '') +
+    (dirHandle ? '<button class="btn wide danger" id="dirOff">Dejar de guardar en carpeta</button>' : '') +
+    (hasDirApi ? '<p class="sum" style="margin-top:12px">En Android no se puede elegir la raíz de «Descargas» ni «Documentos»: crea una carpeta nueva (p. ej. «Audiolibros») y elígela. Al reabrir la app, el navegador puede pedir permiso de nuevo.</p>' : ''),
+    body => {
+      const pick = $('#dirPick'); if (pick) pick.onclick = async () => { if (await chooseDir()) { await dirReady(true); openFolder(); } };
+      const sv = $('#dirSave'); if (sv) sv.onclick = async () => { await exportBook(cur); openFolder(); };
+      const off = $('#dirOff'); if (off) off.onclick = async () => { dirHandle = null; await dbDel('files', 'cfg:dir').catch(() => {}); toast('Ya no se guarda en carpeta'); openFolder(); };
+    });
+}
+$('#dirBtn').onclick = openFolder;
 
 let conv = null, wake = null;
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
@@ -885,6 +982,7 @@ async function runJob(book) {
   if (conv) { toast('Ya hay una conversión en marcha'); return; }
   const job = book.job;
   conv = { book, cancel: false };
+  if (dirHandle) { try { await dirReady(true); } catch (e) {} }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
   resumeHidden = false; renderResume();
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
@@ -940,7 +1038,11 @@ async function runJob(book) {
       for (const ck of cacheKeys) await dbDel('files', ck).catch(() => {});   // el capítulo ya está hecho: se libera la caché temporal
       let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;
       if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
-      book.tracks.splice(at, 0, { name: ch.title, duration: out.seconds, key, ch: ci });
+      const trk = { name: ch.title, duration: out.seconds, key, ch: ci };
+      book.tracks.splice(at, 0, trk);
+      if (dirHandle && !(await saveToDir(book, trk, out.blob, rank)) && !conv.warnedDir) {
+        conv.warnedDir = true; toast('No se pudo guardar en la carpeta. Más tarde usa 📁 → «Guardar ahora».', 6000);
+      }
       if (book.finished) { book.finished = false; book.pos = { track: at, time: 0 }; }
       job.queue = job.queue.filter(x => x !== ci);
       made++;
@@ -1014,6 +1116,7 @@ function openEpub() {
       </div>
       <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, gritos, dudas… Con Gemini, la propia voz interpreta el texto.</small></span></label>
       <p class="sum" id="eSum"></p>
+      <button class="btn wide ghost" id="eDir" type="button"></button>
       <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
       <button class="btn wide" id="eGo">Empezar la conversión</button>
     </div>`, () => {
@@ -1133,6 +1236,9 @@ function openEpub() {
     $('#eGemGap').onchange = () => Voice.setGeminiGap(+$('#eGemGap').value);
     fillLimits();
     $('#eTest').onclick = testVoice;
+    const dirLabel = () => { $('#eDir').textContent = dirHandle ? `📁 Guardar en: ${dirHandle.name} · cambiar` : '📁 Elegir carpeta donde guardar los audios'; };
+    dirLabel();
+    $('#eDir').onclick = async () => { if (await chooseDir()) dirLabel(); };
     $('#eGo').onclick = async () => {
       if (conv) { toast('Ya hay una conversión en marcha'); return; }
       const picks = [...document.querySelectorAll('#eList input:checked')].map(b => +b.value);
@@ -1188,6 +1294,7 @@ function openChapters(book = cur) {
 (async () => {
   try {
     await openDB();
+    await loadDir();
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}   // que el sistema no borre lo convertido ni el progreso
     books = await dbAll('books');
     books.forEach(b => { if (b.job && !b.job.queue) migrateJob(b); });
