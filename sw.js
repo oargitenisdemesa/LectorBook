@@ -1,4 +1,4 @@
-const CACHE = 'lectorbook-v7';
+const CACHE = 'lectorbook-v9';
 const ASSETS = ['./', 'index.html', 'epub.js', 'docs.js', 'expr.js', 'tts.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 // Librerías del motor de voz que se guardan para usarlas sin conexión (los modelos de voz van aparte, en el almacenamiento de la app).
 const CDN_OK = ['cdn.jsdelivr.net', 'esm.sh'];

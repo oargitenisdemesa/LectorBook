@@ -176,9 +176,16 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 </header>
 
 <main>
+  <div id="resumeBar" hidden style="background:var(--card);border:1px solid var(--accent);border-radius:14px;padding:12px 14px;margin:6px 0 14px">
+    <div style="display:flex;align-items:center;gap:10px"><b id="resumeMsg" style="flex:1;font-size:14px;min-width:0"></b><button class="btn" id="resumeGo" style="padding:8px 14px;font-size:13px">Continuar</button><button class="btn ghost" id="resumeX" style="padding:8px 12px;font-size:13px" aria-label="Ocultar">✕</button></div>
+  </div>
   <div id="conv" hidden>
     <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button><button class="btn danger" id="convDel">Eliminar</button></div>
     <div class="cb"><i id="convBar"></i></div>
+    <div id="convAsk" hidden style="margin-top:12px">
+      <div id="convAskMsg" style="font-size:14px;margin-bottom:10px"></div>
+      <div class="r"><button class="btn" id="convAskYes">Continuar</button><button class="btn ghost" id="convAskNo">Parar aquí</button></div>
+    </div>
     <small>Puedes apagar la pantalla: la app intenta seguir convirtiendo. Si se interrumpe, continúa desde el libro.</small>
   </div>
   <div class="grid" id="grid"></div>
@@ -351,7 +358,18 @@ function renderMini() {
   $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
   updatePlay();
 }
-function renderAll() { renderLibrary(); renderMini(); }
+/* Aviso de conversión pendiente: aparece al abrir la app (o cuando una conversión se detiene) si quedan capítulos por convertir */
+let resumeHidden = false;
+function renderResume() {
+  const bar = $('#resumeBar'); if (!bar) return;
+  const b = books.find(x => x.job && x.job.queue && x.job.queue.length);
+  if (!b || conv || resumeHidden) { bar.hidden = true; bar._b = null; return; }
+  bar._b = b; bar.hidden = false;
+  $('#resumeMsg').textContent = `Conversión pendiente de «${b.title}» · ${b.tracks.length} de ${b.job.all.length} capítulos hechos`;
+}
+$('#resumeGo').onclick = () => { const b = $('#resumeBar')._b; if (b) runJob(b); };
+$('#resumeX').onclick = () => { resumeHidden = true; renderResume(); };
+function renderAll() { renderLibrary(); renderMini(); renderResume(); }
 
 $('#grid').addEventListener('click', e => {
   const c = e.target.closest('.card'); if (!c) return;
@@ -794,8 +812,21 @@ function showConv(msg, frac) {
   if (msg != null) $('#convMsg').textContent = msg;
   if (frac != null) $('#convBar').style.width = Math.round(frac * 100) + '%';
 }
-function stopConv() { if (conv) { conv.cancel = true; $('#convMsg').textContent = 'Deteniendo…'; } }
+function stopConv() { if (conv) { conv.cancel = true; $('#convMsg').textContent = 'Deteniendo…'; if (conv.ask) conv.ask(false); } }
 $('#convStop').onclick = stopConv;
+
+/* Con voces Gemini la conversión se hace por tandas: tras cada GEM_BATCH capítulos se pregunta si se sigue (con voces del dispositivo no se pregunta nada). */
+const GEM_BATCH = 2;
+function askContinue(done, left) {
+  return new Promise(res => {
+    const box = $('#convAsk'), next = Math.min(GEM_BATCH, left);
+    $('#convAskMsg').textContent = `Se han convertido ${done} ${done === 1 ? 'capítulo' : 'capítulos'} con Gemini. Quedan ${left}. ¿Sigo con ${next === 1 ? 'el siguiente' : 'los siguientes ' + next}?`;
+    box.hidden = false;
+    conv.ask = ok => { conv.ask = null; box.hidden = true; res(ok); };
+  });
+}
+$('#convAskYes').onclick = () => { if (conv && conv.ask) conv.ask(true); };
+$('#convAskNo').onclick = () => { if (conv && conv.ask) conv.ask(false); };
 $('#convDel').onclick = () => { if (conv) deleteBook(conv.book); };
 async function keepAwake() {
   try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -836,6 +867,7 @@ async function runJob(book) {
   if (conv) { toast('Ya hay una conversión en marcha'); return; }
   const job = book.job;
   conv = { book, cancel: false };
+  resumeHidden = false; renderResume();
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
   await keepAlive(true);
@@ -849,7 +881,7 @@ async function runJob(book) {
       showConv('Descargando la voz…', 0);
       await Voice.download(vid, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
     }
-    let made = 0;
+    let made = 0, sinceAsk = 0;
     while (job.queue.length && !conv.cancel) {
       const ci = job.queue[0];
       const ch = epub.chapters[ci];
@@ -865,7 +897,7 @@ async function runJob(book) {
         let r = null, fromCache = false;
         const vid = voiceFor(chunks[k], job);
         const so = { expr: job.expr === true, role: chunks[k].role, cancelled: () => conv.cancel, onWait: m => showConv(`${label} · ${m}${usage()}`) };
-        const useCache = Voice.isGeminiVoice(vid);
+        const useCache = true;   // todas las voces: si la app se cierra a mitad de capítulo, al continuar se sigue por la frase donde se quedó
         const ck = book.id + ':g:' + ci + ':' + k + ':' + hash36(chunks[k].text + '|' + vid + '|' + so.expr + '|' + chunks[k].role);
         if (useCache) {
           cacheKeys.push(ck);
@@ -894,13 +926,20 @@ async function runJob(book) {
       await dbPut('books', book);
       renderAll(); if (cur === book) renderPlayer();
       if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
+      sinceAsk++;
+      if (usesGem && job.queue.length && !conv.cancel && sinceAsk >= GEM_BATCH) {
+        showConv('En pausa · esperando tu respuesta');
+        const go = await askContinue(made, job.queue.length);
+        sinceAsk = 0;
+        if (!go) conv.cancel = true;
+      }
     }
     if (!job.queue.length) toast(failed ? `Conversión terminada (${failed} frases no se pudieron leer)` : 'Capítulos convertidos');
     else if (conv.cancel && !conv.deleted) toast('Conversión detenida. Puedes continuarla desde el libro.');
   } catch (e) {
     toast(String(e.message || e).slice(0, 160), 7000);
   } finally {
-    conv = null; showConv(); renderLibrary(); keepAlive(false);
+    conv = null; showConv(); renderLibrary(); renderResume(); keepAlive(false);
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
   }
 }
@@ -1128,6 +1167,7 @@ function openChapters(book = cur) {
 (async () => {
   try {
     await openDB();
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}   // que el sistema no borre lo convertido ni el progreso
     books = await dbAll('books');
     books.forEach(b => { if (b.job && !b.job.queue) migrateJob(b); });
     if (books.length) cur = books[0];
