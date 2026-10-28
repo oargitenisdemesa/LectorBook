@@ -186,7 +186,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
       <div id="convAskMsg" style="font-size:14px;margin-bottom:10px"></div>
       <div class="r"><button class="btn" id="convAskYes">Continuar</button><button class="btn ghost" id="convAskNo">Parar aquí</button></div>
     </div>
-    <small>Puedes apagar la pantalla: la app intenta seguir convirtiendo. Si se interrumpe, continúa desde el libro.</small>
+    <small>Puedes bloquear la pantalla o usar otras apps: la app intenta seguir convirtiendo. En Android, pon la batería de Lector Book en «Sin restricciones» para que el sistema no la detenga. Si se interrumpe, continúa desde el aviso de arriba.</small>
   </div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden></div>
@@ -829,7 +829,12 @@ $('#convAskYes').onclick = () => { if (conv && conv.ask) conv.ask(true); };
 $('#convAskNo').onclick = () => { if (conv && conv.ask) conv.ask(false); };
 $('#convDel').onclick = () => { if (conv) deleteBook(conv.book); };
 async function keepAwake() {
-  try { if ('wakeLock' in navigator && !wake) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+  try {
+    if ('wakeLock' in navigator && !wake) {
+      wake = await navigator.wakeLock.request('screen');
+      wake.addEventListener('release', () => { wake = null; });   // si el sistema lo quita, se vuelve a pedir
+    }
+  } catch (e) {}
 }
 document.addEventListener('visibilitychange', () => {
   if (!conv) return;
@@ -848,15 +853,28 @@ function silentWav() {
   for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round((Math.random() - .5) * 6), true);   // ruido casi inaudible (±3 de 32768): mantiene la app despierta sin que se oiga nada
   return new Blob([dv.buffer], { type: 'audio/wav' });
 }
+let keepTimer = null;
 async function keepAlive(on) {
   if (on) {
-    if (!keep) { keepUrl = URL.createObjectURL(silentWav()); keep = new Audio(keepUrl); keep.loop = true; }
+    if (!keep) {
+      keepUrl = URL.createObjectURL(silentWav()); keep = new Audio(keepUrl); keep.loop = true;
+      // si otra app (llamada, vídeo, música) o el sistema pausa el audio silencioso, se reanuda solo mientras se convierte
+      keep.addEventListener('pause', () => { if (conv) setTimeout(() => { if (conv && keep.paused) keep.play().catch(() => {}); }, 300); });
+    }
     try { await keep.play(); } catch (e) {}
+    clearInterval(keepTimer);
+    keepTimer = setInterval(() => {      // vigilante: mantiene el audio, la sesión multimedia y el bloqueo de pantalla
+      if (!conv) return;
+      if (keep.paused) keep.play().catch(() => {});
+      if ('mediaSession' in navigator && audio.paused) navigator.mediaSession.playbackState = 'playing';
+      if (!wake && !document.hidden) keepAwake();
+    }, 3000);
     if ('mediaSession' in navigator && audio.paused) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: 'Convirtiendo libro…', artist: 'Lector Book' });
       navigator.mediaSession.playbackState = 'playing';
     }
   } else if (keep) {
+    clearInterval(keepTimer); keepTimer = null;
     keep.pause();
     if (audio.paused) { if (cur) setMediaSession(); else if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; }
     updatePlay();
@@ -871,6 +889,9 @@ async function runJob(book) {
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
   await keepAlive(true);
+  // Web Lock: indica al navegador que hay trabajo en curso y que no debe congelar la pestaña
+  let freeLock; const lockHeld = new Promise(r => { freeLock = r; });
+  try { if (navigator.locks) navigator.locks.request('lectorbook-conv', () => lockHeld).catch(() => {}); } catch (e) {}
   let failed = 0;
   try {
     const file = await dbGet('files', book.id + ':epub');
@@ -939,7 +960,7 @@ async function runJob(book) {
   } catch (e) {
     toast(String(e.message || e).slice(0, 160), 7000);
   } finally {
-    conv = null; showConv(); renderLibrary(); renderResume(); keepAlive(false);
+    conv = null; freeLock(); showConv(); renderLibrary(); renderResume(); keepAlive(false);
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
   }
 }
