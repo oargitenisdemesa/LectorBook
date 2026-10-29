@@ -1002,6 +1002,8 @@ async function runJob(book) {
     }
     let made = 0, sinceAsk = 0;
     while (job.queue.length && !conv.cancel) {
+      const ciFail = job.queue[0];
+      try {
       const ci = job.queue[0];
       const ch = epub.chapters[ci];
       const chunks = buildPlan(ch.blocks, job);
@@ -1011,6 +1013,7 @@ async function runJob(book) {
       const usesGem = [job.voice, job.voiceDial].some(v => v && Voice.isGeminiVoice(v));
       const usage = () => usesGem ? ` · ${Voice.requestsToday()} peticiones hoy` : '';
       const cacheKeys = [];
+      let okChunks = 0, synthErr = '';
       for (let k = 0; k < chunks.length && !conv.cancel; k++) {
         showConv(`${label} · ${Math.round(100 * k / chunks.length)}%${usage()}`, (made + k / chunks.length) / (made + job.queue.length));
         let r = null, fromCache = false;
@@ -1024,13 +1027,16 @@ async function runJob(book) {
         }
         for (let t = 0; t < 2 && !r; t++) {
           try { r = await Voice.synth(chunks[k].text, vid, so); }
-          catch (e) { if (e.cancelled) break; if (e.fatal) throw e; if (t) failed++; }   // un error de Gemini detiene la conversión: se puede continuar luego
+          catch (e) { if (e.cancelled) break; if (e.fatal) throw e; synthErr = e.message || String(e); if (t) failed++; }   // un error de Gemini detiene la conversión: se puede continuar luego
         }
+        if (r) okChunks++;
         if (r && useCache && !fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
         if (r) await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
       if (conv.cancel) break;
+      // Sin ninguna voz generada, el capítulo quedaría solo con silencios: no se guarda, y se muestra el error real
+      if (!okChunks && chunks.some(c => /[\p{L}\p{N}]/u.test(c.text))) throw new Error('El motor de voz no generó audio: ' + (synthErr || 'causa desconocida'));
       const out = await sink.finish();
       if (conv.cancel) break;
       const key = book.id + ':c' + ci;
@@ -1056,11 +1062,20 @@ async function runJob(book) {
         sinceAsk = 0;
         if (!go) conv.cancel = true;
       }
+      } catch (e) {
+        // Un capítulo con error se omite y se sigue con el siguiente (salvo cancelación o error de cuota de Gemini)
+        if (conv.cancel) break;
+        if (e.fatal) throw e;
+        failed++;
+        job.queue = job.queue.filter(x => x !== ciFail);
+        toast(`Capítulo omitido por un error: ${String(e.message || e).slice(0, 100)}`, 5000);
+      }
     }
     if (!job.queue.length) toast(failed ? `Conversión terminada (${failed} frases no se pudieron leer)` : 'Capítulos convertidos');
-    else if (conv.cancel && !conv.deleted) toast('Conversión detenida. Puedes continuarla desde el libro.');
+    else if (conv.cancel && !conv.deleted) toast(`Conversión detenida. Faltan ${job.queue.length} capítulo(s). Puedes continuarla desde el libro.`, 7000);
   } catch (e) {
     toast(String(e.message || e).slice(0, 160), 7000);
+    if (job.queue.length) setTimeout(() => toast(`Quedan ${job.queue.length} capítulo(s) sin convertir. Pulsa «Continuar» en el libro para seguir.`, 8000), 7500);
   } finally {
     conv = null; freeLock(); showConv(); renderLibrary(); renderResume(); keepAlive(false);
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
