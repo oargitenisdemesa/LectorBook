@@ -328,7 +328,7 @@ const Voice = (() => {
   class OpusSink {
     constructor(bitrate) {
       this.kind = 'opus'; this.bitrate = bitrate;
-      this.packets = []; this.pending = new Float32Array(0); this.samples = 0; this.head = null; this.err = null;
+      this.packets = []; this.pending = new Float32Array(0); this.samples = 0; this.real = 0; this.head = null; this.err = null;
       this.enc = new AudioEncoder({
         output: (chunk, meta) => {
           const d = new Uint8Array(chunk.byteLength); chunk.copyTo(d); this.packets.push(d);
@@ -355,13 +355,13 @@ const Voice = (() => {
       if (this.err) throw this.err;
     }
     silence(sec) { return this.add(new Float32Array(Math.round(sec * 48000)), 48000); }
-    frame(f) {
+    frame(f, n = 960) {
       const data = new Float32Array(f);
       this.enc.encode(new AudioData({ format: 'f32', sampleRate: 48000, numberOfFrames: 960, numberOfChannels: 1, timestamp: Math.round(this.samples / 48000 * 1e6), data }));
-      this.samples += 960;
+      this.samples += 960; this.real += n;   // real: muestras de audio verdaderas (sin el relleno final)
     }
     async finish() {
-      if (this.pending.length) { const f = new Float32Array(960); f.set(this.pending); this.frame(f); this.pending = new Float32Array(0); }
+      if (this.pending.length) { const f = new Float32Array(960); f.set(this.pending); this.frame(f, this.pending.length); this.pending = new Float32Array(0); }
       await this.enc.flush(); this.enc.close();
       if (this.err) throw this.err;
       const pre = this.head ? new DataView(this.head.buffer, this.head.byteOffset).getUint16(10, true) : 312;
@@ -376,7 +376,9 @@ const Voice = (() => {
           lac += Math.floor(this.packets[i].length / 255) + 1; grp.push(this.packets[i++]);
         }
         done += grp.length * 960;
-        pages.push(oggPage(grp, pre + done, serial, seq++, i >= this.packets.length ? 0x04 : 0));
+        const last = i >= this.packets.length;
+        // la última página indica el total real de muestras (sin relleno) y lleva el marcador de fin (EOS)
+        pages.push(oggPage(grp, last ? pre + this.real : pre + done, serial, seq++, last ? 0x04 : 0));
       }
       return { blob: new Blob(pages, { type: 'audio/ogg' }), ext: 'ogg', seconds: this.samples / 48000 };
     }
