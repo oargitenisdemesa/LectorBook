@@ -1284,8 +1284,16 @@ function openChapters(book = cur) {
       book.job.all = sel.map(i => ({ i, title: book.job.all.find(a => a.i === i)?.title || `Capítulo ${i + 1}`, chars: 0 }));
       book.job.queue = [...sel];
       await dbPut('books', book); closeSheet(); renderAll();
-      if (book.tracks.length) { if (conv && conv.book === book) conv.cancel = true; }
+      // Si hay una conversión en marcha de este libro, se detiene y se espera a que termine antes de empezar con la nueva selección
+      if (conv && conv.book === book) {
+        conv.cancel = true;
+        if (conv.ask) conv.ask(false);   // si espera la pregunta «¿sigo?», la respondemos para que salga del bucle
+        const t0 = Date.now();
+        while (conv && Date.now() - t0 < 60000) await new Promise(r => setTimeout(r, 200));
+        if (conv) { toast('La conversión anterior no se detuvo. Vuelve a pulsar Guardar selección en unos segundos.', 6000); return; }
+      }
       if (book.tracks.length) { book.tracks = book.tracks.filter(t => t.ch != null && sel.includes(t.ch)); }
+      await dbPut('books', book);
       if (book.job.queue.length) runJob(book);
     };
   });
