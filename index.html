@@ -980,7 +980,6 @@ async function runJob(book) {
   // Web Lock: indica al navegador que hay trabajo en curso y que no debe congelar la pestaña
   let freeLock; const lockHeld = new Promise(r => { freeLock = r; });
   try { if (navigator.locks) navigator.locks.request('lectorbook-conv', () => lockHeld).catch(() => {}); } catch (e) {}
-  let failed = 0;
   try {
     const file = await dbGet('files', book.id + ':epub');
     if (!file) throw new Error('Falta el archivo ePub original.');
@@ -992,8 +991,6 @@ async function runJob(book) {
     }
     let made = 0;
     while (job.queue.length && !conv.cancel) {
-      const ciFail = job.queue[0];
-      try {
       const ci = job.queue[0];
       const ch = epub.chapters[ci];
       const chunks = buildPlan(ch.blocks, job);
@@ -1001,33 +998,32 @@ async function runJob(book) {
       const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
       const label = `Capítulo ${rank} de ${job.all.length}`;
       const cacheKeys = [];
-      let okChunks = 0, synthErr = '';
+      // Todos los trozos son obligatorios: si uno no se puede generar, el capítulo queda pendiente (no se guarda a medias ni se salta)
       for (let k = 0; k < chunks.length && !conv.cancel; k++) {
         showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
-        let r = null, fromCache = false;
         const vid = voiceFor(chunks[k], job);
-        // caché por frase: si la app se cierra a mitad de capítulo, al continuar se sigue por donde se quedó
         const ck = book.id + ':g:' + ci + ':' + k + ':' + hash36(chunks[k].text + '|' + vid + '|' + chunks[k].role);
         cacheKeys.push(ck);
+        let r = null, fromCache = false;
         try { const c = await dbGet('files', ck); if (c && c.pcm) { r = { samples: fromI16(c.pcm), rate: c.rate }; fromCache = true; } } catch (e) {}
-        for (let t = 0; t < 2 && !r; t++) {
+        let lastErr = null;
+        for (let t = 0; t < 3 && !r && !conv.cancel; t++) {
           try { r = await Voice.synth(chunks[k].text, vid); }
-          catch (e) { if (e.cancelled) break; synthErr = e.message || String(e); if (t) failed++; }
+          catch (e) { lastErr = e; if (t < 2) await new Promise(res => setTimeout(res, 1500 * (t + 1))); }
         }
-        if (r) okChunks++;
-        if (r && !fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
-        if (r) await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
+        if (conv.cancel) break;
+        if (!r) throw new Error(`Falta un trozo de «${ch.title}» (${k + 1} de ${chunks.length}): ${String((lastErr && lastErr.message) || 'causa desconocida').slice(0, 120)}. Pulsa «Continuar» para reintentarlo.`);
+        if (!fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
+        await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
         await sink.silence(chunks[k].pause);
       }
       if (conv.cancel) break;
-      // Sin ninguna voz generada, el capítulo quedaría solo con silencios: no se guarda, y se muestra el error real
-      if (!okChunks && chunks.some(c => /[\p{L}\p{N}]/u.test(c.text))) throw new Error('El motor de voz no generó audio: ' + (synthErr || 'causa desconocida'));
       const out = await sink.finish();
       if (conv.cancel) break;
       const key = book.id + ':c' + ci;
       await dbPut('files', out.blob, key);
       for (const ck of cacheKeys) await dbDel('files', ck).catch(() => {});   // el capítulo ya está hecho: se libera la caché temporal
-      let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;
+      let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;   // orden fijo: siempre por número de capítulo
       if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
       const trk = { name: ch.title, duration: out.seconds, key, ch: ci };
       book.tracks.splice(at, 0, trk);
@@ -1040,15 +1036,8 @@ async function runJob(book) {
       await dbPut('books', book);
       renderAll(); if (cur === book) renderPlayer();
       if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
-      } catch (e) {
-        // Un capítulo con error se omite y se sigue con el siguiente (salvo cancelación)
-        if (conv.cancel) break;
-        failed++;
-        job.queue = job.queue.filter(x => x !== ciFail);
-        toast(`Capítulo omitido por un error: ${String(e.message || e).slice(0, 100)}`, 5000);
-      }
     }
-    if (!job.queue.length) toast(failed ? `Conversión terminada (${failed} frases no se pudieron leer)` : 'Capítulos convertidos');
+    if (!job.queue.length) toast('Todos los capítulos elegidos están convertidos');
     else if (conv.cancel && !conv.deleted) toast(`Conversión detenida. Faltan ${job.queue.length} capítulo(s). Puedes continuarla desde el libro.`, 7000);
   } catch (e) {
     toast(String(e.message || e).slice(0, 160), 7000);
@@ -1208,8 +1197,8 @@ function openChapters(book = cur) {
       const sel = [...document.querySelectorAll('#sheetBody .chl input:checked')].map(i => +i.value);
       if (!sel.length) { toast('Elige al menos un capítulo'); return; }
       book.job = book.job || { voice: Voice.defaultVoice, voiceDial: '', expr: true, all: [], queue: [] };
-      book.job.all = sel.map(i => ({ i, title: book.job.all.find(a => a.i === i)?.title || `Capítulo ${i + 1}`, chars: 0 }));
-      book.job.queue = [...sel];
+      // la lista completa de capítulos se conserva; solo se encolan los elegidos que aún no están convertidos
+      book.job.queue = sel.filter(i => !book.tracks.some(t => t.ch === i));
       await dbPut('books', book); closeSheet(); renderAll();
       // Si hay una conversión en marcha de este libro, se detiene y se espera a que termine antes de empezar con la nueva selección
       if (conv && conv.book === book) {
@@ -1220,6 +1209,7 @@ function openChapters(book = cur) {
         if (conv) { toast('La conversión anterior no se detuvo. Vuelve a pulsar Guardar selección en unos segundos.', 6000); return; }
       }
       if (book.tracks.length) { book.tracks = book.tracks.filter(t => t.ch != null && sel.includes(t.ch)); }
+      book.pos.track = Math.min(book.pos.track, Math.max(0, book.tracks.length - 1));
       await dbPut('books', book);
       if (book.job.queue.length) runJob(book);
     };
