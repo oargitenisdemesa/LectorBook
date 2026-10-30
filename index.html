@@ -1010,9 +1010,9 @@ async function runJob(book) {
         let r = null, fromCache = false;
         try { const c = await dbGet('files', ck); if (c && c.pcm) { r = { samples: fromI16(c.pcm), rate: c.rate }; fromCache = true; } } catch (e) {}
         let lastErr = null;
-        for (let t = 0; t < 2 && !r && !conv.cancel; t++) {   // reintentos automáticos: la conversión no se para por un fallo puntual
+        for (let t = 0; t < 4 && !r && !conv.cancel; t++) {   // reintentos automáticos: la conversión no se para por un fallo puntual
           try { r = await Voice.synth(chunks[k].text, vid); }
-          catch (e) { lastErr = e; if (t < 1) { showConv(`${label} · reintentando trozo ${k + 1}…`, null); await new Promise(res => setTimeout(res, Math.min(1000 * (t + 1), 5000))); } }
+          catch (e) { lastErr = e; Voice.reset(); if (t < 3) { showConv(`${label} · reintentando trozo ${k + 1} (${t + 2} de 4)…`, null); await new Promise(res => setTimeout(res, 1000 * (t + 1))); } }
         }
         if (conv.cancel) break;
         if (!r && !conv.cancel) {
