@@ -478,13 +478,12 @@ const Docs = (() => {
   };
 
   /* ---------- entrada principal ---------- */
-  const EXT = /\.(epub|kepub|txt|text|md|markdown|html?|xhtml|htmlz|docx|odt|rtf|pdf|fb2|fbz|mobi|azw3?|prc|csv|log)$/i;
   async function open(file) {
     const name = stripName(file.name || 'Texto');
     const ext = ((/\.([^.]+)$/.exec(file.name || '') || [])[1] || '').toLowerCase();
     let kind = await detect(file, ext);
     if (kind === 'kepub' || (kind === ext && file.type === 'application/epub+zip')) kind = 'epub';
-    if (kind === 'epub') { const d = await Epub.open(file); d.language = d.language || ''; return d; }
+    if (kind === 'epub') return Epub.open(file);
     const bytes = () => file.arrayBuffer().then(b => new Uint8Array(b));
     let doc;
     if (kind === 'pdf' || file.type === 'application/pdf') doc = await pdfToDoc(file, name);
@@ -511,5 +510,5 @@ const Docs = (() => {
     return { title: doc.title, author: doc.author, language: doc.language || guessLang(sample), cover: doc.cover || null, chapters };
   }
 
-  return { open, EXT, guessLang, _textToBlocks: textToBlocks, _chapterize: chapterize, _rtf: rtfToText, _pdfLines: pdfLines, _pdfParas: pdfParas, _pdfStrip: pdfStrip };
+  return { open };
 })();

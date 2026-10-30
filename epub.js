@@ -75,7 +75,7 @@ const Epub = (() => {
         const n = c.localName.toLowerCase();
         if (n === 'script' || n === 'style' || n === 'svg' || n === 'head' || n === 'sup' && c.getAttribute('epub:type') === 'noteref') continue;
         if (n === 'br') { buf += ' '; continue; }
-        if (n === 'i' || n === 'em') { buf += '\uE000'; walk(c, kind); buf += '\uE001'; continue; }
+        if (n === 'i' || n === 'em') { buf += ''; walk(c, kind); buf += ''; continue; }
         if (BLOCKS.has(n)) {
           flush(kind);
           walk(c, HEAD.test(n) ? 'h' : kind);
@@ -126,13 +126,12 @@ const Epub = (() => {
 
     const chapters = [];
     for (const it of spine) {
-      const path = resolve(base, it.href);
-      const data = await zip.get(path);
+      const data = await zip.get(resolve(base, it.href));
       if (!data) continue;
       const blocks = blocksFromXhtml(td.decode(data));
       const chars = blocks.reduce((s, b) => s + b.text.length, 0);
       const head = blocks.find(b => b.kind === 'h');
-      chapters.push({ path, blocks, chars, title: head ? head.text.replace(/[\uE000\uE001]/g, '').slice(0, 90) : '' });
+      chapters.push({ blocks, chars, title: head ? head.text.replace(/[]/g, '').slice(0, 90) : '' });
     }
     chapters.forEach((c, i) => { if (!c.title) c.title = 'Sección ' + (i + 1); });
     return {
@@ -143,19 +142,37 @@ const Epub = (() => {
     };
   }
 
+  /* Parte un fragmento que es más largo que maxLen: primero por comas, y si aún es largo, por palabras.
+     El motor de voz produce audio defectuoso (o falla) con trozos demasiado largos, así que nunca se le pasa uno. */
+  function splitLong(s, maxLen) {
+    const out = [];
+    let cur = '';
+    const add = piece => {
+      if (cur && (cur + ' ' + piece).length > maxLen) { out.push(cur); cur = piece; }
+      else cur = cur ? cur + ' ' + piece : piece;
+    };
+    for (const part of s.split(/(?<=[,;:])\s+/)) {
+      if (part.length <= maxLen) add(part);
+      else for (const w of part.split(' ')) {
+        for (let i = 0; i < w.length; i += maxLen) if (w) add(w.slice(i, i + maxLen));   // una palabra sola nunca se pierde
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
   /* Trocea un capítulo en frases con la pausa que debe llevar cada una (ritmo). */
   function toChunks(blocks, maxLen = 260) {
     const out = [];
     for (const b of blocks) {
-      const text = b.text.replace(/[\uE000\uE001]/g, '').replace(/…/g, '...').replace(/\s+/g, ' ').trim();
+      const text = b.text.replace(/[]/g, '').replace(/…/g, '...').replace(/\s+/g, ' ').trim();
       const sentences = text.match(/[^.!?]+(?:[.!?]+["'»”)\]]*|$)\s*/g) || [text];
       let cur = '';
       const emit = (t, pause) => { t = t.trim(); if (/[\p{L}\p{N}]/u.test(t)) out.push({ text: t, pause }); else if (out.length) out[out.length - 1].pause = Math.max(out[out.length - 1].pause, pause); };
       for (const s of sentences) {
         if (cur && (cur + s).length > maxLen) { emit(cur, 0.28); cur = ''; }
         if (s.length > maxLen) {
-          const parts = s.split(/(?<=[,;:])\s+/);
-          for (const p of parts) {
+          for (const p of splitLong(s, maxLen)) {
             if (cur && (cur + p).length > maxLen) { emit(cur, 0.18); cur = ''; }
             cur += p + ' ';
           }
@@ -169,5 +186,5 @@ const Epub = (() => {
     return out;
   }
 
-  return { open, toChunks, readZip, blocksFromXhtml };
+  return { open, toChunks, splitLong, readZip, blocksFromXhtml };
 })();

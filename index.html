@@ -48,7 +48,6 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .empty{text-align:center;color:var(--muted);padding:70px 24px;line-height:1.5}
 .empty b{display:block;color:var(--text);font-size:19px;margin-bottom:8px}
 .empty .btn{margin-top:18px}
-.empty small{display:block;margin-top:22px;font-size:12.5px;opacity:.8}
 
 #mini{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:8;background:var(--card2);border-radius:16px;box-shadow:0 8px 28px #000a;overflow:hidden}
 #mini .in{display:flex;align-items:center;gap:12px;padding:8px 10px}
@@ -140,23 +139,11 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 .chl em{font-style:normal;color:var(--muted);font-size:12px;flex:none}
 .lbl{font-size:13px;color:var(--muted)}
 .sum{color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.45}
-.btn.row{display:flex;gap:8px}
 .ck{display:flex;gap:10px;align-items:flex-start;margin:0 0 14px;font-size:14px;color:var(--text);line-height:1.35}
 .ck input{width:18px;height:18px;accent-color:var(--accent);flex:none;margin-top:1px}
 .ck small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
 #toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s,transform .2s}
 #toast.show{opacity:1;transform:translate(-50%,0)}
-.gemini-actions{display:flex;gap:8px;align-items:center;margin-top:8px}
-.gemini-actions .btn{padding:10px 12px;font-size:13px}
-.voice-box{margin:0 0 12px}
-.voice-stack{display:flex;gap:8px;align-items:flex-start}
-.voice-stack .sel{flex:1}
-.gemini-box{margin:8px 0 12px;border:1px solid rgba(245,166,35,.45);background:linear-gradient(135deg,rgba(245,166,35,.12),rgba(245,166,35,.04));border-radius:14px;padding:12px}
-.gemini-banner{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:var(--text);font-size:12px}
-.gemini-banner b{color:var(--accent);white-space:nowrap}
-.gemini-banner span{color:var(--muted)}
-.gemini-cta{background:linear-gradient(135deg,#f5a623,#e7b74d);color:#1a1209;box-shadow:0 10px 26px rgba(245,166,35,.25)}
-.gemini-badge{white-space:nowrap}
 </style>
 </head>
 <body>
@@ -165,7 +152,6 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
   <div class="top">
     <h1>Lector <span>Book</span></h1>
     <button id="dirBtn" class="btn ghost" aria-label="Carpeta de audios" title="Carpeta de audios">📁</button>
-    <button id="install" class="btn ghost" hidden>Instalar</button>
     <button id="addBtn" class="btn">+ Añadir</button>
   </div>
   <input class="search" id="q" type="search" placeholder="Buscar por título o autor">
@@ -551,7 +537,6 @@ async function prevTrack() {
 }
 async function jumpTo(track, time) {
   if (!cur || loadedId !== cur.id) return;
-  const was = !audio.paused;
   if (track !== cur.pos.track) await loadTrack(track, time); else audio.currentTime = time;
   cur.pos.time = time;
   try { await audio.play(); } catch (e) {}
@@ -969,6 +954,53 @@ async function keepAlive(on) {
   }
 }
 
+/* Genera un trozo de voz. Primero mira la caché (de una conversión interrumpida); si el motor falla, reintenta,
+   y como último recurso recarga la página: la conversión se reanuda sola desde lo ya guardado. null = detenido. */
+async function synthChunk(c, vid, ck, label, k, n) {
+  try { const x = await dbGet('files', ck); if (x && x.pcm) return { samples: fromI16(x.pcm), rate: x.rate }; } catch (e) {}
+  let lastErr = null;
+  for (let t = 0; t < 4 && !conv.cancel; t++) {
+    try {
+      const r = await Voice.synth(c.text, vid);
+      if (!conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
+      return r;
+    } catch (e) {
+      lastErr = e;
+      if (t < 3 && !conv.cancel) { showConv(`${label} · reintentando trozo ${k + 1} de ${n} (${t + 2} de 4)…`, null); await new Promise(res => setTimeout(res, 1000 * (t + 1))); }
+    }
+  }
+  if (conv.cancel) return null;
+  const reloads = +ssGet('lb-auto-n', 0);
+  if (reloads < 25) {
+    ssSet('lb-auto-n', reloads + 1); ssSet('lb-auto-book', conv.book.id);
+    showConv(`${label} · reiniciando el motor de voz…`, null);
+    location.reload(); await new Promise(() => {});
+  }
+  throw new Error(`Falta un trozo (${k + 1} de ${n}) → «${c.text.slice(0, 70)}»: ${String((lastErr && lastErr.message) || 'causa desconocida').slice(0, 80)}. Pulsa «Continuar» para reintentarlo.`);
+}
+/* Convierte un capítulo entero en un único archivo. Todos los trozos son obligatorios: si uno falla, el capítulo queda pendiente.
+   Devuelve null si se detiene. Los errores del codificador de audio llegan marcados con e.encoder. */
+async function convertChapter(book, chunks, ci, ch, job, made, label, forceWav) {
+  const sink = await Voice.createSink(!forceWav);
+  const cacheKeys = [];
+  const enc = async f => { try { return await f(); } catch (e) { e.encoder = true; throw e; } };
+  for (let k = 0; k < chunks.length; k++) {
+    if (conv.cancel) return null;
+    const c = chunks[k], vid = voiceFor(c, job);
+    const ck = book.id + ':g:' + ci + ':' + k + ':' + hash36(c.text + '|' + vid + '|' + c.role);
+    cacheKeys.push(ck);
+    showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
+    const r = await synthChunk(c, vid, ck, label, k, chunks.length);
+    if (!r) return null;
+    await enc(() => sink.add(fadeEdges(Expr.shape(r.samples, c.g), r.rate), r.rate * c.f));
+    await enc(() => sink.silence(c.pause));
+  }
+  if (conv.cancel) return null;
+  const out = await enc(() => sink.finish());
+  if (!(out.seconds > 0.5)) throw new Error(`«${ch.title}» ha salido sin audio. Pulsa «Continuar» para reintentarlo.`);
+  return { out, cacheKeys };
+}
+
 async function runJob(book) {
   if (conv) { toast('Ya hay una conversión en marcha'); return; }
   const job = book.job;
@@ -988,48 +1020,31 @@ async function runJob(book) {
     if (!file) throw new Error('Falta el archivo ePub original.');
     const epub = await Docs.open(file);
     for (const vid of [...new Set([job.voice, job.voiceDial].filter(Boolean))]) {
-      if (await Voice.isStored(vid)) continue;
-      showConv('Descargando la voz…', 0);
-      await Voice.download(vid, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
+      await Voice.ensure(vid, f => showConv(`Descargando la voz… ${Math.round(f * 100)}%`, f));
     }
     let made = 0;
     while (job.queue.length && !conv.cancel) {
       const ci = job.queue[0];
       const ch = epub.chapters[ci];
       const chunks = buildPlan(ch.blocks, job);
-      const sink = await Voice.createSink();
+      if (!chunks.length) {                 // capítulo sin nada que leer (solo separadores o símbolos): se descarta
+        job.queue = job.queue.filter(x => x !== ci); await dbPut('books', book); continue;
+      }
       const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
       const label = `Capítulo ${rank} de ${job.all.length}`;
-      const cacheKeys = [];
-      // Todos los trozos son obligatorios: si uno no se puede generar, el capítulo queda pendiente (no se guarda a medias ni se salta)
-      for (let k = 0; k < chunks.length && !conv.cancel; k++) {
-        showConv(`${label} · ${Math.round(100 * k / chunks.length)}%`, (made + k / chunks.length) / (made + job.queue.length));
-        const vid = voiceFor(chunks[k], job);
-        const ck = book.id + ':g:' + ci + ':' + k + ':' + hash36(chunks[k].text + '|' + vid + '|' + chunks[k].role);
-        cacheKeys.push(ck);
-        let r = null, fromCache = false;
-        try { const c = await dbGet('files', ck); if (c && c.pcm) { r = { samples: fromI16(c.pcm), rate: c.rate }; fromCache = true; } } catch (e) {}
-        let lastErr = null;
-        for (let t = 0; t < 4 && !r && !conv.cancel; t++) {   // reintentos automáticos: la conversión no se para por un fallo puntual
-          try { r = await Voice.synth(chunks[k].text, vid); }
-          catch (e) { lastErr = e; Voice.reset(); if (t < 3) { showConv(`${label} · reintentando trozo ${k + 1} (${t + 2} de 4)…`, null); await new Promise(res => setTimeout(res, 1000 * (t + 1))); } }
-        }
-        if (conv.cancel) break;
-        if (!r && !conv.cancel) {
-          // el motor de voz se ha caído: se recarga la página (libera la memoria) y la conversión se reanuda sola desde lo guardado
-          const n = +ssGet('lb-auto-n', 0);
-          if (n < 25) { ssSet('lb-auto-n', n + 1); ssSet('lb-auto-book', book.id); showConv(`${label} · reiniciando el motor de voz…`, null); location.reload(); await new Promise(() => {}); }
-        }
-        if (!r) throw new Error(`Falta un trozo de «${ch.title}» (${k + 1} de ${chunks.length}) → «${chunks[k].text.slice(0, 70)}»: ${String((lastErr && lastErr.message) || 'causa desconocida').slice(0, 60)}. Pulsa «Continuar» para reintentarlo.`);
-        if (!fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
-        await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
-        await sink.silence(chunks[k].pause);
+      let res;
+      try { res = await convertChapter(book, chunks, ci, ch, job, made, label, false); }
+      catch (e) {
+        // el codificador Opus ha fallado: se repite el capítulo en WAV (los trozos ya generados están en caché)
+        if (conv.cancel || !e.encoder) throw e;
+        showConv(`${label} · cambiando al formato de respaldo…`, null);
+        res = await convertChapter(book, chunks, ci, ch, job, made, label, true);
       }
-      if (conv.cancel) break;
-      const out = await sink.finish();
-      if (conv.cancel) break;
+      if (!res) break;                      // detenido por el usuario
+      const { out, cacheKeys } = res;
       const key = book.id + ':c' + ci;
-      await dbPut('files', out.blob, key);
+      try { await dbPut('files', out.blob, key); }
+      catch (e) { throw new Error('No hay espacio suficiente para guardar el capítulo. Libera espacio y pulsa «Continuar».'); }
       for (const ck of cacheKeys) await dbDel('files', ck).catch(() => {});   // el capítulo ya está hecho: se libera la caché temporal
       let at = book.tracks.findIndex(t => t.ch > ci); if (at < 0) at = book.tracks.length;   // orden fijo: siempre por número de capítulo
       if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
@@ -1090,9 +1105,7 @@ function openEpub() {
       const ids = [...new Set([id, job.voiceDial || id])];
       btn.disabled = true;
       try {
-        for (const v of ids) {
-          if (!(await Voice.isStored(v))) await Voice.download(v, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
-        }
+        for (const v of ids) await Voice.ensure(v, f => { btn.textContent = `Descargando la voz… ${Math.round(f * 100)}%`; });
         btn.textContent = 'Generando…';
         const demo = [
           { kind: 'p', text: 'Ella lo miró en silencio. Afuera llovía desde hacía horas.' },

@@ -4,7 +4,7 @@
    El motor de voz no tiene control de emociones, así que el tono se consigue variando la velocidad
    y el timbre de cada frase (a mayor velocidad, voz más aguda y viva; a menor, más grave y pausada). */
 const Expr = (() => {
-  const I0 = '\uE000', I1 = '\uE001';
+  const I0 = '', I1 = '';
 
   /* El verbo que acompaña al diálogo («—dijo ella susurrando—») decide cómo se dice */
   const MOODS = [
@@ -23,9 +23,9 @@ const Expr = (() => {
   };
   const moodOf = t => { for (const [m, re] of MOODS) if (re.test(t)) return m; return ''; };
 
-  /* Divide un párrafo en tramos: { t, dial, ital } */
+  /* Divide un párrafo en tramos: { t, dial, ital, aside } */
   function runsOf(text) {
-    const dash = /^[\s\uE000\uE001]*—/.test(text);
+    const dash = /^[\s]*—/.test(text);
     const runs = []; let buf = '', dlg = false, ital = false, aside = false;
     const push = () => { const t = buf.replace(/^[\s,;:.]+/, ''); if (t.trim()) runs.push({ t, dial: dlg, ital, aside }); buf = ''; };
     for (const c of text) {
@@ -50,7 +50,7 @@ const Expr = (() => {
     for (const s of sents) {
       if (cur && (cur + s).length > maxLen) { out.push(cur.trim()); cur = ''; }
       if (s.length > maxLen) {
-        for (const p of s.split(/(?<=[,;:])\s+/)) { if (cur && (cur + p).length > maxLen) { out.push(cur.trim()); cur = ''; } cur += p + ' '; }
+        for (const p of Epub.splitLong(s, maxLen)) { if (cur && (cur + p).length > maxLen) { out.push(cur.trim()); cur = ''; } cur += p + ' '; }
       } else cur += s;
       if (/[.!?]["'»”)\]]*\s*$/.test(cur) && cur.length > 40 || /[?!]["'»”)\]]*\s*$/.test(cur)) { out.push(cur.trim()); cur = ''; }
     }
@@ -82,12 +82,12 @@ const Expr = (() => {
     const out = [];
     for (const b of blocks) {
       if (b.kind === 'h') {
-        const t = b.text.replace(/[\uE000\uE001]/g, '').trim();
+        const t = b.text.replace(/[]/g, '').trim();
         if (/[\p{L}\p{N}]/u.test(t)) { const st = styleOf(t, { head: true }); out.push({ text: t, pause: 1.1, role: 'narr', f: st.f, g: st.g }); }
         continue;
       }
       const rs = runsOf(b.text);
-      const isDash = /^[\s\uE000\uE001]*—/.test(b.text);
+      const isDash = /^[\s]*—/.test(b.text);
       const blockOut = [];
       rs.forEach((r, i) => {
         let mood = '';
@@ -123,41 +123,5 @@ const Expr = (() => {
     return o;
   }
 
-  /* ---------- Gemini ----------
-     Su voz ya interpreta el texto (tono, emoción, pausas), así que no se le manda frase a frase ni se le toca el timbre:
-     se le dan párrafos enteros, con los diálogos tal cual, hasta llenar un tramo de `max` caracteres. */
-  function packText(t, max) {
-    const sents = t.match(/[^.!?]+(?:[.!?]+["'»”)\]]*|$)\s*/g) || [t];
-    const out = []; let cur = '';
-    for (const s of sents) { if (cur && (cur + s).length > max) { out.push(cur.trim()); cur = ''; } cur += s; }
-    if (cur.trim()) out.push(cur.trim());
-    return out;
-  }
-  function planGemini(blocks, max = 1500) {
-    const out = []; let buf = '';
-    const flush = () => { if (/[\p{L}\p{N}]/u.test(buf)) out.push({ text: buf.trim(), pause: 0.45, role: 'narr', f: 1, g: 1 }); buf = ''; };
-    for (const b of blocks) {
-      const t = b.text.replace(/[]/g, '').replace(/\s+/g, ' ').trim();
-      if (!/[\p{L}\p{N}]/u.test(t)) continue;
-      for (const p of (t.length > max ? packText(t, max) : [t])) {
-        const piece = b.kind === 'h' && !/[.!?:]$/.test(p) ? p + '.' : p;   // el título termina en punto para que haga pausa
-        if (buf && buf.length + piece.length + 2 > max) flush();
-        buf += (buf ? '\n\n' : '') + piece;
-      }
-    }
-    flush();
-    return out;
-  }
-  /* Cuando narrador y diálogos tienen voces distintas: junta las frases seguidas del mismo papel (solo las que van a Gemini) */
-  function mergeRuns(items, canMerge, max = 1500) {
-    const out = [];
-    for (const it of items) {
-      const last = out[out.length - 1];
-      if (last && last.merge && canMerge(it) && last.role === it.role && last.text.length + it.text.length + 1 <= max) { last.text += ' ' + it.text; last.pause = it.pause; continue; }
-      out.push(canMerge(it) ? { ...it, f: 1, g: 1, merge: true } : it);
-    }
-    return out;
-  }
-
-  return { plan, shape, runsOf, moodOf, planGemini, mergeRuns };
+  return { plan, shape };
 })();

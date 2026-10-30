@@ -7,7 +7,8 @@ const Voice = (() => {
     'https://esm.sh/@diffusionstudio/vits-web@1.0.3'
   ];
   const FALLBACK = ['es_ES-davefx-medium', 'es_ES-sharvard-medium', 'es_ES-carlfm-x_low'];
-  let lib = null, libGen = 0;
+  const MIN_SECONDS = 0.05;                 // menos de esto = el motor no ha generado nada útil
+  let lib = null, libGen = 0, calls = 0;
   /* Si el motor se cae (Aborted, memoria), se descarta y la siguiente petición carga una instancia nueva */
   function reset() { lib = null; libGen++; }
   /* Quita símbolos que el fonetizador no soporta */
@@ -50,9 +51,22 @@ const Voice = (() => {
     const l = await load();
     await l.download(id, p => { if (onProgress && p && p.total) onProgress(p.loaded / p.total); });
   }
+  /* Se asegura de que la voz está en el dispositivo: reintenta la descarga si se corta la conexión */
+  async function ensure(id, onProgress) {
+    if (await isStored(id)) return;
+    let lastErr = null;
+    for (let t = 0; t < 3; t++) {
+      try {
+        await download(id, onProgress);
+        if (await isStored(id)) return;
+        lastErr = new Error('la voz no se guardó');
+      } catch (e) { lastErr = e; reset(); }
+      await new Promise(r => setTimeout(r, 1500 * (t + 1)));
+    }
+    throw new Error('No se pudo descargar la voz (¿hay conexión a internet?). ' + (lastErr && lastErr.message || ''));
+  }
 
-  /* Texto -> {samples: Float32Array, rate}. o se acepta por compatibilidad y se ignora. */
-  let calls = 0;
+  /* Texto -> {samples: Float32Array, rate}. Lanza error si el motor falla o devuelve audio vacío. */
   async function synth(text, id) {
     // reinicio preventivo: el motor acumula memoria con muchas frases seguidas
     if (++calls % 15 === 0) reset();
@@ -60,7 +74,9 @@ const Voice = (() => {
       const l = await load();
       const out = await l.predict({ text: clean(text), voiceId: id });
       const blob = out instanceof Blob ? out : new Blob([out], { type: 'audio/wav' });
-      return decodeWav(new Uint8Array(await blob.arrayBuffer()));
+      const r = decodeWav(new Uint8Array(await blob.arrayBuffer()));
+      if (r.samples.length < r.rate * MIN_SECONDS) throw new Error('la voz devolvió audio vacío');
+      return r;
     } catch (e) { reset(); throw e; }
   }
 
@@ -74,7 +90,7 @@ const Voice = (() => {
       if (id === 'data') { data = [p + 8, Math.min(size, b.length - p - 8)]; break; }
       p += 8 + size + (size & 1);
     }
-    if (!fmt || !data) throw new Error('La voz devolvió un audio no válido.');
+    if (!fmt || !data || !fmt.ch || !fmt.rate) throw new Error('La voz devolvió un audio no válido.');
     const bytes = fmt.bits / 8, n = Math.floor(data[1] / (bytes * fmt.ch));
     const s = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -120,9 +136,11 @@ const Voice = (() => {
     return t;
   }
 
-  /* Sumidero que codifica a Opus (≈ 10 veces menos espacio que WAV); si el navegador no puede, WAV. */
-  async function createSink(bitrate = 32000) {
-    const hasOpus = typeof AudioEncoder !== 'undefined' && (await AudioEncoder.isConfigSupported({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate })).supported;
+  /* Sumidero que codifica a Opus (≈ 10 veces menos espacio que WAV); si el navegador no puede, WAV.
+     allowOpus = false fuerza WAV (se usa si el codificador Opus falla a mitad de un capítulo). */
+  async function createSink(allowOpus = true, bitrate = 32000) {
+    const hasOpus = allowOpus && typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined' &&
+      (await AudioEncoder.isConfigSupported({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate }).catch(() => ({ supported: false }))).supported;
     return hasOpus ? new OpusSink(bitrate) : new WavSink();
   }
 
@@ -153,6 +171,7 @@ const Voice = (() => {
       this.enc.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate });
     }
     get seconds() { return this.samples / 48000; }
+    check() { if (this.err) throw this.err; if (this.enc.state !== 'configured') throw new Error('El codificador de audio se ha cerrado.'); }
     async add(samples, rate) {
       const s = resample(samples, rate, 48000);
       const merged = new Float32Array(this.pending.length + s.length);
@@ -163,17 +182,19 @@ const Voice = (() => {
         if (this.enc.encodeQueueSize > 40) await new Promise(r => setTimeout(r, 5));
       }
       this.pending = merged.slice(o);
-      if (this.err) throw this.err;
+      this.check();
     }
     silence(sec) { return this.add(new Float32Array(Math.round(sec * 48000)), 48000); }
     frame(f, n = 960) {
+      this.check();
       const data = new Float32Array(f);
       this.enc.encode(new AudioData({ format: 'f32', sampleRate: 48000, numberOfFrames: 960, numberOfChannels: 1, timestamp: Math.round(this.samples / 48000 * 1e6), data }));
       this.samples += 960; this.real += n;   // real: muestras de audio verdaderas (sin el relleno final)
     }
     async finish() {
       if (this.pending.length) { const f = new Float32Array(960); f.set(this.pending); this.frame(f, this.pending.length); this.pending = new Float32Array(0); }
-      await this.enc.flush(); this.enc.close();
+      await this.enc.flush();
+      this.enc.close();
       if (this.err) throw this.err;
       const pre = this.head ? new DataView(this.head.buffer, this.head.byteOffset).getUint16(10, true) : 312;
       const serial = (Math.random() * 2 ** 32) >>> 0, pages = [];
@@ -216,5 +237,5 @@ const Voice = (() => {
     }
   }
 
-  return { spanishVoices, isStored, download, synth, createSink, load, reset, defaultVoice: FALLBACK[0] };
+  return { spanishVoices, ensure, synth, createSink, reset, defaultVoice: FALLBACK[0] };
 })();
