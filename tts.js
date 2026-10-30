@@ -7,13 +7,18 @@ const Voice = (() => {
     'https://esm.sh/@diffusionstudio/vits-web@1.0.3'
   ];
   const FALLBACK = ['es_ES-davefx-medium', 'es_ES-sharvard-medium', 'es_ES-carlfm-x_low'];
-  let lib = null;
+  let lib = null, libGen = 0;
+  /* Si el motor se cae (Aborted, memoria), se descarta y la siguiente petición carga una instancia nueva */
+  function reset() { lib = null; libGen++; }
+  /* Quita símbolos que el fonetizador no soporta */
+  const clean = s => s.replace(/[^\p{L}\p{N}\s.,;:!?¡¿'"«»“”()\-—…]/gu, ' ').replace(/\s+/g, ' ').trim() || '.';
 
   async function load() {
     if (lib) return lib;
     let err;
     for (const u of LIB_URLS) {
-      try { lib = await import(u); return lib; } catch (e) { err = e; }
+      const url = libGen ? u + (u.includes('?') ? '&' : '?') + 'r=' + libGen : u;   // tras un fallo, se carga una instancia nueva
+      try { lib = await import(url); return lib; } catch (e) { err = e; }
     }
     throw new Error('No se pudo cargar el motor de voz (¿hay conexión a internet?). ' + (err && err.message || ''));
   }
@@ -48,10 +53,12 @@ const Voice = (() => {
 
   /* Texto -> {samples: Float32Array, rate}. o se acepta por compatibilidad y se ignora. */
   async function synth(text, id) {
-    const l = await load();
-    const out = await l.predict({ text, voiceId: id });
-    const blob = out instanceof Blob ? out : new Blob([out], { type: 'audio/wav' });
-    return decodeWav(new Uint8Array(await blob.arrayBuffer()));
+    try {
+      const l = await load();
+      const out = await l.predict({ text: clean(text), voiceId: id });
+      const blob = out instanceof Blob ? out : new Blob([out], { type: 'audio/wav' });
+      return decodeWav(new Uint8Array(await blob.arrayBuffer()));
+    } catch (e) { reset(); throw e; }
   }
 
   function decodeWav(b) {
@@ -206,5 +213,5 @@ const Voice = (() => {
     }
   }
 
-  return { spanishVoices, isStored, download, synth, createSink, load, defaultVoice: FALLBACK[0] };
+  return { spanishVoices, isStored, download, synth, createSink, load, reset, defaultVoice: FALLBACK[0] };
 })();
