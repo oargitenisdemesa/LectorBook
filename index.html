@@ -903,6 +903,9 @@ $('#dirBtn').onclick = openFolder;
 let conv = null, wake = null;
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const ssGet = (k, d) => { try { const v = sessionStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
+const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
+const ssDel = k => { try { sessionStorage.removeItem(k); } catch (e) {} };
 
 function showConv(msg, frac) {
   $('#conv').hidden = !conv;
@@ -1007,11 +1010,16 @@ async function runJob(book) {
         let r = null, fromCache = false;
         try { const c = await dbGet('files', ck); if (c && c.pcm) { r = { samples: fromI16(c.pcm), rate: c.rate }; fromCache = true; } } catch (e) {}
         let lastErr = null;
-        for (let t = 0; t < 8 && !r && !conv.cancel; t++) {   // reintentos automáticos: la conversión no se para por un fallo puntual
+        for (let t = 0; t < 2 && !r && !conv.cancel; t++) {   // reintentos automáticos: la conversión no se para por un fallo puntual
           try { r = await Voice.synth(chunks[k].text, vid); }
-          catch (e) { lastErr = e; if (t < 7) { showConv(`${label} · reintentando trozo ${k + 1}…`, null); await new Promise(res => setTimeout(res, Math.min(1000 * (t + 1), 5000))); } }
+          catch (e) { lastErr = e; if (t < 1) { showConv(`${label} · reintentando trozo ${k + 1}…`, null); await new Promise(res => setTimeout(res, Math.min(1000 * (t + 1), 5000))); } }
         }
         if (conv.cancel) break;
+        if (!r && !conv.cancel) {
+          // el motor de voz se ha caído: se recarga la página (libera la memoria) y la conversión se reanuda sola desde lo guardado
+          const n = +ssGet('lb-auto-n', 0);
+          if (n < 25) { ssSet('lb-auto-n', n + 1); ssSet('lb-auto-book', book.id); showConv(`${label} · reiniciando el motor de voz…`, null); location.reload(); await new Promise(() => {}); }
+        }
         if (!r) throw new Error(`Falta un trozo de «${ch.title}» (${k + 1} de ${chunks.length}) → «${chunks[k].text.slice(0, 70)}»: ${String((lastErr && lastErr.message) || 'causa desconocida').slice(0, 60)}. Pulsa «Continuar» para reintentarlo.`);
         if (!fromCache && !conv.deleted) { try { await dbPut('files', { rate: r.rate, pcm: toI16(r.samples) }, ck); } catch (e) {} }
         await sink.add(fadeEdges(Expr.shape(r.samples, chunks[k].g), r.rate), r.rate * chunks[k].f);
@@ -1032,7 +1040,7 @@ async function runJob(book) {
       }
       if (book.finished) { book.finished = false; book.pos = { track: at, time: 0 }; }
       job.queue = job.queue.filter(x => x !== ci);
-      made++;
+      made++; ssDel('lb-auto-n');
       await dbPut('books', book);
       renderAll(); if (cur === book) renderPlayer();
       if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
@@ -1225,6 +1233,9 @@ function openChapters(book = cur) {
     books.forEach(b => { if (b.job && !b.job.queue) migrateJob(b); });
     if (books.length) cur = books[0];
     renderAll();
+    const autoId = ssGet('lb-auto-book', ''); ssDel('lb-auto-book');
+    const ab = autoId && books.find(x => x.id === autoId);
+    if (ab && ab.job && ab.job.queue && ab.job.queue.length) { toast('Reanudando la conversión…'); setTimeout(() => runJob(ab), 800); }
     await new Promise(r => setTimeout(r, 50));
   } catch (e) {
     console.error(e);
