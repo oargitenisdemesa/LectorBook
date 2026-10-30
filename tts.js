@@ -52,7 +52,10 @@ const Voice = (() => {
   }
 
   /* Texto -> {samples: Float32Array, rate}. o se acepta por compatibilidad y se ignora. */
+  let calls = 0;
   async function synth(text, id) {
+    // reinicio preventivo: el motor acumula memoria con muchas frases seguidas
+    if (++calls % 40 === 0) reset();
     try {
       const l = await load();
       const out = await l.predict({ text: clean(text), voiceId: id });
