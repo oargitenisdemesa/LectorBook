@@ -289,6 +289,8 @@ const fromI16 = a => { const o = new Float32Array(a.length); for (let i = 0; i <
 let books = [], filter = 'all', query = '';
 let cur = null, loadedId = null, curUrl = null;
 let sleep = null, sleepTimer = null, dragging = false, lastSave = 0;
+let waitNext = false;   // llegó al final de lo convertido mientras el libro sigue convirtiéndose: espera el siguiente capítulo
+const bookLoaded = () => !!cur && loadedId === cur.id;
 const coverUrls = {};
 const audio = new Audio();
 audio.preload = 'auto';
@@ -457,6 +459,7 @@ function openAdd() {
 }
 
 async function loadTrack(i, t = 0) {
+  waitNext = false;
   const blob = await dbGet('files', (cur.tracks[i] && cur.tracks[i].key) || cur.id + ':' + i);
   if (!blob) { toast('Falta el archivo de audio'); return false; }
   if (curUrl) URL.revokeObjectURL(curUrl);
@@ -494,12 +497,14 @@ async function openBook(id, opts = {}) {
 async function playAudio() {
   if (!cur || loadedId !== cur.id) return;
   if (cur.finished) { cur.finished = false; cur.pos = { track: 0, time: 0 }; await loadTrack(0, 0); renderPlayer(); }
+  setMediaSession();   // devuelve la info del libro (durante una conversión se muestra otra)
   try { await audio.play(); } catch (e) {}
   cur.lastPlayed = Date.now();
 }
 async function togglePlay() {
   if (!cur) return;
   if (loadedId !== cur.id) { await openBook(cur.id, { play: true, show: false }); return; }
+  if (waitNext) { waitNext = false; await nextTrack(true); return; }
   if (audio.paused) await playAudio(); else audio.pause();
 }
 async function savePos() {
@@ -517,7 +522,10 @@ function skip(d) {
 async function nextTrack(autoplay = true) {
   if (!cur || loadedId !== cur.id) return;
   if (cur.pos.track >= cur.tracks.length - 1) {
-    if (partial(cur)) { audio.pause(); toast('Fin de lo convertido. Convierte más capítulos en Opciones → Capítulos del libro.'); return; }
+    if (partial(cur)) {
+      if (conv && conv.book === cur && !conv.cancel) { waitNext = !!autoplay; updateTime(); return; }   // la conversión sigue: esperamos al siguiente capítulo
+      audio.pause(); toast('Fin de lo convertido. Convierte más capítulos en Opciones → Capítulos del libro.'); return;
+    }
     cur.finished = true; cur.pos.time = audio.duration || 0;
     audio.pause(); await savePos(); renderAll(); renderPlayer(); return;
   }
@@ -605,7 +613,8 @@ function updateTime() {
   $('#pCur').textContent = fmt(t);
   $('#pLeft').textContent = '-' + fmt(Math.max(0, d - t));
   const left = (total(cur) - elapsed(cur)) / (cur.speed || 1);
-  $('#pTotal').textContent = cur.finished ? 'Libro terminado' : total(cur) ? `Quedan ${fmtLeft(left)} del libro` : '';
+  const busy = conv && conv.book === cur ? ' · convirtiendo en segundo plano' : '';
+  $('#pTotal').textContent = waitNext ? 'Esperando el siguiente capítulo: se está convirtiendo…' : cur.finished ? 'Libro terminado' : total(cur) ? `Quedan ${fmtLeft(left)} del libro${busy}` : '';
   $('#mBar').style.width = Math.round(prog(cur) * 100) + '%';
   const tt = total(cur), pr = prog(cur), n = cur.tracks.length;
   $('#bkFill').style.width = (pr * 100).toFixed(1) + '%';
@@ -721,7 +730,7 @@ $('#pMore').onclick = () => {
   sheet('Opciones del libro', chaps + extra + `
     <button class="li" data-a="edit"><div class="n"><b>Editar título y autor</b></div></button>
     <button class="li" data-a="cover"><div class="n"><b>Cambiar portada</b></div></button>
-    <button class="li" data-a="folder"><div class="n"><b>Carpeta de audios</b><span>${dirHandle ? 'Guardando en «' + esc(dirHandle.name) + '»' : 'Sin carpeta elegida'}</span></div></button>
+    <button class="li" data-a="folder"><div class="n"><b>Carpeta de audios</b><span>${cur.ownDir ? 'Carpeta propia de este libro' : dirHandle ? 'Carpeta general: «' + esc(dirHandle.name) + '»' : 'Sin carpeta elegida'}</span></div></button>
     <button class="li" data-a="restart"><div class="n"><b>Empezar de nuevo</b></div></button>
     <button class="li" data-a="done"><div class="n"><b>Marcar como terminado</b></div></button>
     <button class="li" data-a="del"><div class="n"><b style="color:var(--danger)">Eliminar de la biblioteca</b></div></button>`, body => {
@@ -765,6 +774,7 @@ async function deleteBook(b = cur) {
   }
   for (let i = 0; i < b.tracks.length; i++) await dbDel('files', b.tracks[i].key || b.id + ':' + i);
   await dbDel('files', b.id + ':epub').catch(() => {});
+  await dbDel('files', bookDirKey(b)).catch(() => {});
   await dbDelRange('files', b.id + ':g:', b.id + ':g:\uffff').catch(() => {});
   await dbDel('books', b.id);
   books = books.filter(x => x.id !== b.id);
@@ -791,31 +801,47 @@ function setMediaSession() {
 }
 
 /* Carpeta de destino para los audios convertidos (File System Access API: Chrome/Edge en Android y escritorio).
-   El acceso a la carpeta se guarda en IndexedDB; al reabrir la app el navegador puede volver a pedir permiso (un toque en «Permitir»). */
+   Hay una carpeta general y cada libro puede tener la suya. Los accesos se guardan en IndexedDB; al reabrir la app
+   el navegador puede volver a pedir permiso (un toque en «Permitir»). En iPhone y Firefox no existe esta opción: los audios se descargan. */
 const hasDirApi = typeof window.showDirectoryPicker === 'function';
 let dirHandle = null;
+const bookDirKey = b => b.id + ':dir';
+const resetSaved = b => b.tracks.forEach(t => { delete t.saved; });
 const safeName = s => String(s || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Sin título';
 async function loadDir() { try { dirHandle = (await dbGet('files', 'cfg:dir')) || null; } catch (e) { dirHandle = null; } }
-async function dirReady(ask) {
-  if (!dirHandle) return false;
+async function dirReady(ask, h = dirHandle) {
+  if (!h) return false;
   try {
     const o = { mode: 'readwrite' };
-    if ((await dirHandle.queryPermission(o)) === 'granted') return true;
-    return !!ask && (await dirHandle.requestPermission(o)) === 'granted';
+    if ((await h.queryPermission(o)) === 'granted') return true;
+    return !!ask && (await h.requestPermission(o)) === 'granted';
   } catch (e) { return false; }
 }
+/* carpeta propia del libro (si la eligió) */
+async function ownDirOf(book) {
+  if (!book || !book.ownDir) return null;
+  try { return (await dbGet('files', bookDirKey(book))) || null; } catch (e) { return null; }
+}
+/* carpeta donde se guarda este libro: la propia o, si no tiene, la general */
+async function dirOf(book) { return (await ownDirOf(book)) || dirHandle; }
+async function pickDirHandle() {
+  if (!hasDirApi) { toast('Este navegador no permite elegir carpeta. Los audios se descargan uno a uno.', 6000); return null; }
+  try { return await window.showDirectoryPicker({ id: 'lectorbook', mode: 'readwrite', startIn: 'music' }); }
+  catch (e) { if (!e || e.name !== 'AbortError') toast('No se pudo usar esa carpeta. Crea una nueva (p. ej. «Audiolibros») y elígela.', 6000); return null; }
+}
+/* carpeta general: la usan los libros que no tienen una propia */
 async function chooseDir() {
-  if (!hasDirApi) { toast('Este navegador no permite elegir carpeta. Usa «Guardar ahora» para descargar los audios.', 6000); return false; }
-  try {
-    const h = await window.showDirectoryPicker({ id: 'lectorbook', mode: 'readwrite', startIn: 'music' });
-    dirHandle = h; await dbPut('files', h, 'cfg:dir');
-    // al cambiar de carpeta, lo ya guardado en la anterior se considera pendiente para la nueva (se copia con «Guardar ahora»)
-    for (const b of books) { let ch = false; b.tracks.forEach(t => { if (t.saved) { delete t.saved; ch = true; } }); if (ch) await dbPut('books', b); }
-    toast(`Carpeta elegida: ${h.name}`); return true;
-  } catch (e) {
-    if (!e || e.name !== 'AbortError') toast('No se pudo usar esa carpeta. Crea una nueva (p. ej. «Audiolibros») y elígela.', 6000);
-    return false;
-  }
+  const h = await pickDirHandle(); if (!h) return false;
+  dirHandle = h; await dbPut('files', h, 'cfg:dir');
+  // lo ya guardado en la carpeta general anterior se considera pendiente para la nueva
+  for (const b of books) if (!b.ownDir && b.tracks.some(t => t.saved)) { resetSaved(b); await dbPut('books', b); }
+  toast(`Carpeta general: ${h.name}`); return true;
+}
+/* carpeta propia para un libro */
+async function setBookDir(book, h) {
+  book.ownDir = true; await dbPut('files', h, bookDirKey(book));
+  resetSaved(book); await dbPut('books', book);
+  toast(`«${book.title}» se guardará en «${h.name}»`);
 }
 async function extOf(b) {
   try {
@@ -834,9 +860,10 @@ const rankOf = (book, t, i) => {
 };
 const trackFileName = async (book, t, rank, blob) => `${String(rank).padStart(2, '0')} - ${safeName(t.name)}.${await extOf(blob)}`;
 async function saveToDir(book, t, blob, rank) {
-  if (!(await dirReady(false))) return false;
+  const h = await dirOf(book);
+  if (!h || !(await dirReady(false, h))) return false;
   try {
-    const sub = await dirHandle.getDirectoryHandle(safeName(book.title), { create: true });
+    const sub = await h.getDirectoryHandle(safeName(book.title), { create: true });
     const name = await trackFileName(book, t, rank, blob);
     const w = await (await sub.getFileHandle(name, { create: true })).createWritable();
     await w.write(blob); await w.close();
@@ -848,8 +875,8 @@ async function exportBook(book) {
   const todo = book.tracks.map((t, i) => ({ t, i })).filter(x => !x.t.saved);
   if (!todo.length) { toast('Todo está ya en la carpeta'); return; }
   if (hasDirApi) {
-    if (!dirHandle && !(await chooseDir())) return;
-    if (!(await dirReady(true))) { toast('Sin permiso para escribir en la carpeta. Vuelve a intentarlo y pulsa «Permitir».', 6000); return; }
+    if (!(await dirOf(book)) && !(await chooseDir())) return;
+    if (!(await dirReady(true, await dirOf(book)))) { toast('Sin permiso para escribir en la carpeta. Vuelve a intentarlo y pulsa «Permitir».', 6000); return; }
   }
   let n = 0;
   for (const { t, i } of todo) {
@@ -867,23 +894,31 @@ async function exportBook(book) {
   await dbPut('books', book);
   toast(hasDirApi ? `${n} ${n === 1 ? 'audio guardado' : 'audios guardados'} en la carpeta` : `${n} ${n === 1 ? 'audio descargado' : 'audios descargados'}`);
 }
-function openFolder() {
-  const pend = cur ? cur.tracks.filter(t => !t.saved).length : 0;
-  sheet('Carpeta de audios',
-    `<p class="sum">${!hasDirApi ? 'Este navegador no permite elegir carpeta; puedes descargar los audios uno a uno.'
-      : dirHandle ? `Carpeta actual: <b>${esc(dirHandle.name)}</b>. Cada capítulo se guarda ahí, en una subcarpeta con el título del libro, nada más convertirse. Puedes cambiarla cuando quieras: los capítulos siguientes irán a la nueva.`
-      : 'Aún no has elegido carpeta. Los audios se guardan solo dentro de la app. Elige una para que cada capítulo se copie también al móvil.'}</p>` +
-    (hasDirApi ? `<button class="btn wide" id="dirPick">${dirHandle ? 'Cambiar carpeta' : 'Elegir carpeta'}</button>` : '') +
-    (cur && cur.tracks.length ? `<button class="btn wide ghost" id="dirSave">${hasDirApi ? 'Guardar ahora' : 'Descargar'} los audios de «${esc(cur.title)}»${hasDirApi ? ` (${pend} pendientes)` : ''}</button>` : '') +
-    (dirHandle ? '<button class="btn wide danger" id="dirOff">Dejar de guardar en carpeta</button>' : '') +
-    (hasDirApi ? '<p class="sum" style="margin-top:12px">En Android no se puede elegir la raíz de «Descargas» ni «Documentos»: crea una carpeta nueva (p. ej. «Audiolibros») y elígela. Al reabrir la app, el navegador puede pedir permiso de nuevo.</p>' : ''),
-    body => {
-      const pick = $('#dirPick'); if (pick) pick.onclick = async () => { if (await chooseDir()) { await dirReady(true); openFolder(); } };
-      const sv = $('#dirSave'); if (sv) sv.onclick = async () => { await exportBook(cur); openFolder(); };
-      const off = $('#dirOff'); if (off) off.onclick = async () => { dirHandle = null; await dbDel('files', 'cfg:dir').catch(() => {}); toast('Ya no se guarda en carpeta'); openFolder(); };
-    });
+async function openFolder(book = cur) {
+  const own = await ownDirOf(book);
+  const pend = book ? book.tracks.filter(t => !t.saved).length : 0;
+  const where = own ? `Este libro se guarda en la carpeta <b>${esc(own.name)}</b>.`
+    : dirHandle ? `Se guarda en la carpeta general <b>${esc(dirHandle.name)}</b>.`
+    : 'Aún no hay carpeta: los audios solo están dentro de la app.';
+  let html = `<p class="sum">${hasDirApi ? where : 'Este navegador no permite elegir carpeta; los audios se descargan uno a uno.'}</p>`;
+  if (hasDirApi) {
+    if (book) html += '<button class="btn wide" id="dirBook">Elegir carpeta solo para este libro</button>';
+    html += `<button class="btn wide ${book ? 'ghost' : ''}" id="dirPick">${dirHandle ? 'Cambiar la carpeta general' : 'Elegir carpeta general'}</button>`;
+    if (own) html += '<button class="btn wide ghost" id="dirUseGen">Usar la carpeta general para este libro</button>';
+  }
+  if (book && book.tracks.length) html += `<button class="btn wide ghost" id="dirSave">${hasDirApi ? 'Guardar ahora' : 'Descargar'} los audios de «${esc(book.title)}»${hasDirApi ? ` (${pend} pendientes)` : ''}</button>`;
+  if (dirHandle) html += '<button class="btn wide danger" id="dirOff">Dejar de guardar en la carpeta general</button>';
+  if (hasDirApi) html += '<p class="sum" style="margin-top:12px">En Android no se puede elegir la raíz de «Descargas» ni «Documentos»: crea una carpeta nueva (p. ej. «Audiolibros») y elígela. Al reabrir la app, el navegador puede pedir permiso de nuevo.</p>';
+  sheet('Carpeta de audios', html, () => {
+    const on = (id, f) => { const el = $('#' + id); if (el) el.onclick = f; };
+    on('dirBook', async () => { const h = await pickDirHandle(); if (h) { await setBookDir(book, h); openFolder(book); } });
+    on('dirPick', async () => { if (await chooseDir()) openFolder(book); });
+    on('dirUseGen', async () => { book.ownDir = false; await dbDel('files', bookDirKey(book)).catch(() => {}); resetSaved(book); await dbPut('books', book); toast('Este libro usa la carpeta general'); openFolder(book); });
+    on('dirSave', async () => { await exportBook(book); openFolder(book); });
+    on('dirOff', async () => { dirHandle = null; await dbDel('files', 'cfg:dir').catch(() => {}); toast('Ya no se guarda en la carpeta general'); openFolder(book); });
+  });
 }
-$('#dirBtn').onclick = openFolder;
+$('#dirBtn').onclick = () => openFolder();
 
 let conv = null, wake = null;
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
@@ -939,10 +974,10 @@ async function keepAlive(on) {
     keepTimer = setInterval(() => {      // vigilante: mantiene el audio, la sesión multimedia y el bloqueo de pantalla
       if (!conv) return;
       if (keep.paused) keep.play().catch(() => {});
-      if ('mediaSession' in navigator && audio.paused) navigator.mediaSession.playbackState = 'playing';
+      if ('mediaSession' in navigator && !bookLoaded()) navigator.mediaSession.playbackState = 'playing';
       if (!wake && !document.hidden) keepAwake();
     }, 3000);
-    if ('mediaSession' in navigator && audio.paused) {
+    if ('mediaSession' in navigator && !bookLoaded()) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: 'Convirtiendo libro…', artist: 'Lector Book' });
       navigator.mediaSession.playbackState = 'playing';
     }
@@ -1007,7 +1042,7 @@ async function runJob(book) {
   // Libros creados con voces Gemini (ya eliminadas): pasan a la voz del dispositivo por defecto
   for (const k of ['voice', 'voiceDial']) if (job[k] && !/^es_ES-/.test(job[k])) job[k] = k === 'voice' ? Voice.defaultVoice : '';
   conv = { book, cancel: false };
-  if (dirHandle) { try { await dirReady(true); } catch (e) {} }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
+  const dh0 = await dirOf(book); if (dh0) { try { await dirReady(true, dh0); } catch (e) {} }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
   resumeHidden = false; renderResume();
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
@@ -1050,7 +1085,8 @@ async function runJob(book) {
       if (book.tracks.length && at <= book.pos.track && !book.finished) { book.pos.track++; }
       const trk = { name: ch.title, duration: out.seconds, key, ch: ci };
       book.tracks.splice(at, 0, trk);
-      if (dirHandle && !(await saveToDir(book, trk, out.blob, rank)) && !conv.warnedDir) {
+      const hasDir = !!(await dirOf(book));
+      if (hasDir && !(await saveToDir(book, trk, out.blob, rank)) && !conv.warnedDir) {
         conv.warnedDir = true; toast('No se pudo guardar en la carpeta. Más tarde usa 📁 → «Guardar ahora».', 6000);
       }
       if (book.finished) { book.finished = false; book.pos = { track: at, time: 0 }; }
@@ -1058,6 +1094,8 @@ async function runJob(book) {
       made++; ssDel('lb-auto-n');
       await dbPut('books', book);
       renderAll(); if (cur === book) renderPlayer();
+      // el reproductor estaba esperando a que hubiera más capítulos: sigue solo, sin cortar la escucha
+      if (waitNext && cur === book && book.pos.track < book.tracks.length - 1) { waitNext = false; nextTrack(true); }
       if (book.tracks.length === 1) toast('Primer capítulo listo: ya puedes escucharlo');
     }
     if (!job.queue.length) toast('Todos los capítulos elegidos están convertidos');
@@ -1066,7 +1104,8 @@ async function runJob(book) {
     toast(String(e.message || e).slice(0, 300), 12000);
     if (job.queue.length) setTimeout(() => toast(`Quedan ${job.queue.length} capítulo(s) sin convertir. Pulsa «Continuar» en el libro para seguir.`, 8000), 7500);
   } finally {
-    conv = null; freeLock(); showConv(); renderLibrary(); renderResume(); keepAlive(false);
+    if (waitNext) { waitNext = false; toast('La conversión ha terminado. Pulsa ▶ para seguir con lo que haya.', 5000); }
+    conv = null; freeLock(); showConv(); renderLibrary(); renderResume(); keepAlive(false); if (cur) updateTime();
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
   }
 }
@@ -1078,7 +1117,7 @@ function buildPlan(blocks, job) {
 const voiceFor = (chunk, job) => chunk.role === 'dial' && job.voiceDial ? job.voiceDial : job.voice;
 
 function openEpub() {
-  let epub = null, langNote = '';
+  let epub = null, langNote = '', pendingDir = null;
   sheet('Convertir un libro en audio', `
     <label class="f">Libro: ePub, PDF, Word (.docx), Kindle (.mobi, .azw3), FB2, .odt, .rtf, .html, .txt, .md…
       <input id="eFile" type="file"></label>
@@ -1095,6 +1134,7 @@ function openEpub() {
       <label class="ck"><input type="checkbox" id="eExpr" checked><span>Lectura expresiva<small>Cambia el tono, el ritmo y el volumen según el contexto: preguntas, exclamaciones, susurros, gritos, dudas…</small></span></label>
       <p class="sum" id="eSum"></p>
       <button class="btn wide ghost" id="eDir" type="button"></button>
+      <button class="btn wide ghost" id="eDirGen" type="button" hidden>Usar la carpeta general</button>
       <button class="btn wide ghost" id="eTest">▶ Probar la voz</button>
       <button class="btn wide" id="eGo">Empezar la conversión</button>
     </div>`, () => {
@@ -1174,9 +1214,16 @@ function openEpub() {
     $('#eAll').onclick = () => setAll(true);
     $('#eNone').onclick = () => setAll(false);
     $('#eTest').onclick = testVoice;
-    const dirLabel = () => { $('#eDir').textContent = dirHandle ? `📁 Guardar en: ${dirHandle.name} · cambiar` : '📁 Elegir carpeta donde guardar los audios'; };
+    const dirLabel = () => {
+      $('#eDir').textContent = !hasDirApi ? '📁 Este navegador no permite elegir carpeta (se descargan)'
+        : pendingDir ? `📁 Guardar en «${pendingDir.name}» (solo este libro) · cambiar`
+        : dirHandle ? `📁 Guardar en «${dirHandle.name}» (carpeta general) · cambiar`
+        : '📁 Elegir carpeta donde guardar los audios';
+      $('#eDirGen').hidden = !pendingDir;
+    };
     dirLabel();
-    $('#eDir').onclick = async () => { if (await chooseDir()) dirLabel(); };
+    $('#eDir').onclick = async () => { const h = await pickDirHandle(); if (h) { pendingDir = h; dirLabel(); } };
+    $('#eDirGen').onclick = () => { pendingDir = null; dirLabel(); };
     $('#eGo').onclick = async () => {
       if (conv) { toast('Ya hay una conversión en marcha'); return; }
       const picks = [...document.querySelectorAll('#eList input:checked')].map(b => +b.value);
@@ -1187,10 +1234,12 @@ function openEpub() {
       const book = {
         id, title: $('#eTitle').value.trim() || epub.title, author: $('#eAuthor').value.trim(), cover: epub.cover,
         tracks: [], pos: { track: 0, time: 0 }, speed: 1, bookmarks: [], added: Date.now(), lastPlayed: 0, finished: false,
+        ownDir: !!pendingDir,
         job: { voice, voiceDial, expr: $('#eExpr').checked, all: epub.chapters.map((c, i) => ({ i, title: c.title, chars: c.chars })).filter(a => a.chars > 0), queue: picks }
       };
       try {
         await dbPut('files', epub.file, id + ':epub');
+        if (pendingDir) await dbPut('files', pendingDir, bookDirKey(book));
         await dbPut('books', book);
       } catch (e) { toast('No hay espacio suficiente para guardar el libro.'); return; }
       books.push(book);
@@ -1208,33 +1257,42 @@ function migrateJob(b) {
 }
 
 function openChapters(book = cur) {
-  const list = (book.job && book.job.all ? book.job.all : []).map((c, i) => ({ ...c, idx: i }));
-  if (!list.length) return;
-  sheet('Capítulos del libro', `<div class="addrow"><button class="btn ghost" id="chapAll" type="button">Seleccionar todos</button><button class="btn ghost" id="chapNone" type="button">Quitar todos</button></div><div class="chl">${list.map(c => `<label><input type="checkbox" value="${c.i}" ${book.tracks.some(t => t.ch === c.i) ? 'checked' : ''}><span>${esc(c.title)}</span></label>`).join('')}</div><button class="btn wide" id="chapSave">Guardar selección</button>`, body => {
-    const setAllChap = v => document.querySelectorAll('#sheetBody .chl input').forEach(i => { i.checked = v; });
-    $('#chapAll').onclick = () => setAllChap(true);
-    $('#chapNone').onclick = () => setAllChap(false);
-    $('#chapSave').onclick = async () => {
-      const sel = [...document.querySelectorAll('#sheetBody .chl input:checked')].map(i => +i.value);
-      if (!sel.length) { toast('Elige al menos un capítulo'); return; }
-      book.job = book.job || { voice: Voice.defaultVoice, voiceDial: '', expr: true, all: [], queue: [] };
-      // la lista completa de capítulos se conserva; solo se encolan los elegidos que aún no están convertidos
-      book.job.queue = sel.filter(i => !book.tracks.some(t => t.ch === i));
-      await dbPut('books', book); closeSheet(); renderAll();
-      // Si hay una conversión en marcha de este libro, se detiene y se espera a que termine antes de empezar con la nueva selección
-      if (conv && conv.book === book) {
-        conv.cancel = true;
-        if (conv.ask) conv.ask(false);   // si espera la pregunta «¿sigo?», la respondemos para que salga del bucle
-        const t0 = Date.now();
-        while (conv && Date.now() - t0 < 60000) await new Promise(r => setTimeout(r, 200));
-        if (conv) { toast('La conversión anterior no se detuvo. Vuelve a pulsar Guardar selección en unos segundos.', 6000); return; }
-      }
-      if (book.tracks.length) { book.tracks = book.tracks.filter(t => t.ch != null && sel.includes(t.ch)); }
-      book.pos.track = Math.min(book.pos.track, Math.max(0, book.tracks.length - 1));
-      await dbPut('books', book);
-      if (book.job.queue.length) runJob(book);
-    };
+  if (!book || !book.job || !book.job.all || !book.job.all.length) return;
+  const job = book.job;
+  const isDone = i => book.tracks.some(t => t.ch === i);
+  const running = !!conv && conv.book === book;
+  const doneN = job.all.filter(c => isDone(c.i)).length;
+  const rows = job.all.map(c => {
+    const done = isDone(c.i), now = running && job.queue[0] === c.i, queued = job.queue.includes(c.i);
+    const st = done ? '✓ convertido' : now ? 'convirtiendo…' : queued ? 'en cola' : 'pendiente';
+    return `<label><input type="checkbox" value="${c.i}"${done ? ' disabled checked' : queued ? ' checked' : ''}><span>${esc(c.title)}</span><em>${st}</em></label>`;
+  }).join('');
+  sheet('Capítulos del libro',
+    `<p class="sum">${doneN} de ${job.all.length} convertidos${running ? ' · se está convirtiendo ahora; mientras, puedes escuchar lo que ya está hecho' : ''}. Marca los capítulos que quieras y conviértelos ya, o convierte todo el libro.</p>
+     <div class="chl">${rows}</div>
+     <button class="btn wide" id="chapNow">Convertir los marcados ahora</button>
+     <button class="btn wide ghost" id="chapRest">Convertir todo lo que falta</button>`, () => {
+    const picked = () => [...document.querySelectorAll('#sheetBody .chl input:checked:not(:disabled)')].map(i => +i.value);
+    $('#chapNow').onclick = () => queueChapters(book, picked(), true);
+    $('#chapRest').onclick = () => queueChapters(book, job.all.map(c => c.i).filter(i => !isDone(i)), false);
   });
+}
+/* Añade capítulos a la cola. «now» los pone justo después del capítulo que se está convirtiendo.
+   Si el libro ya se está convirtiendo, la cola se amplía en caliente (runJob la lee en cada vuelta): no hay que parar nada. */
+async function queueChapters(book, ids, now) {
+  if (conv && conv.book !== book) { toast(`Ahora se convierte «${conv.book.title}». Espera a que termine.`, 5000); return; }
+  if (conv && conv.cancel) { toast('La conversión se está deteniendo. Vuelve a pulsar en unos segundos.', 5000); return; }
+  const job = book.job;
+  const running = !!conv;
+  const head = running && job.queue.length ? [job.queue[0]] : [];   // el capítulo en curso no se mueve
+  ids = [...new Set(ids)].filter(i => !head.includes(i) && !book.tracks.some(t => t.ch === i));
+  if (!ids.length) { toast('Marca algún capítulo que aún no esté convertido'); return; }
+  const rest = job.queue.slice(head.length).filter(i => !ids.includes(i));
+  job.queue = now ? [...head, ...ids, ...rest] : [...head, ...rest, ...ids];
+  await dbPut('books', book);
+  closeSheet(); renderAll(); if (cur === book) renderPlayer();
+  if (running) toast(`${ids.length} capítulo(s) añadidos a la conversión en curso`);
+  else runJob(book);
 }
 
 (async () => {
