@@ -167,7 +167,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
     <div style="display:flex;align-items:center;gap:10px"><b id="resumeMsg" style="flex:1;font-size:14px;min-width:0"></b><button class="btn" id="resumeGo" style="padding:8px 14px;font-size:13px">Continuar</button><button class="btn ghost" id="resumeX" style="padding:8px 12px;font-size:13px" aria-label="Ocultar">✕</button></div>
   </div>
   <div id="conv" hidden>
-    <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button><button class="btn danger" id="convDel">Eliminar</button></div>
+    <div class="r"><b id="convMsg"></b><button class="btn ghost" id="convStop">Detener</button><button class="btn" id="convPerm" hidden>Permitir carpeta</button><button class="btn danger" id="convDel">Eliminar</button></div>
     <div class="cb"><i id="convBar"></i></div>
     <div id="convAsk" hidden style="margin-top:12px">
       <div id="convAskMsg" style="font-size:14px;margin-bottom:10px"></div>
@@ -900,7 +900,7 @@ async function openFolder(book = cur) {
   const where = own ? `Este libro se guarda en la carpeta <b>${esc(own.name)}</b>.`
     : dirHandle ? `Se guarda en la carpeta general <b>${esc(dirHandle.name)}</b>.`
     : 'Aún no hay carpeta: los audios solo están dentro de la app.';
-  let html = `<p class="sum">${hasDirApi ? where : 'Este navegador no permite elegir carpeta; los audios se descargan uno a uno.'}</p>`;
+  let html = `<p class="sum">${hasDirApi ? where + ' Dentro, cada libro tiene su subcarpeta con el título.' : 'Este navegador no permite elegir carpeta; los audios se descargan uno a uno.'}</p>`;
   if (hasDirApi) {
     if (book) html += '<button class="btn wide" id="dirBook">Elegir carpeta solo para este libro</button>';
     html += `<button class="btn wide ${book ? 'ghost' : ''}" id="dirPick">${dirHandle ? 'Cambiar la carpeta general' : 'Elegir carpeta general'}</button>`;
@@ -936,6 +936,14 @@ function stopConv() { if (conv) { conv.cancel = true; $('#convMsg').textContent 
 $('#convStop').onclick = stopConv;
 
 $('#convDel').onclick = () => { if (conv) deleteBook(conv.book); };
+/* El navegador pide permiso para escribir en la carpeta al reabrir la app; solo se puede conceder con un toque */
+$('#convPerm').onclick = async () => {
+  const b = conv ? conv.book : null, h = b ? await dirOf(b) : null;
+  if (!h) return;
+  if (!(await dirReady(true, h))) { toast('No se concedió el permiso. Pulsa «Permitir carpeta» otra vez.', 6000); return; }
+  $('#convPerm').hidden = true;
+  await exportBook(b);   // copia a la carpeta los capítulos que quedaron pendientes
+};
 async function keepAwake() {
   try {
     if ('wakeLock' in navigator && !wake) {
@@ -1042,7 +1050,8 @@ async function runJob(book) {
   // Libros creados con voces Gemini (ya eliminadas): pasan a la voz del dispositivo por defecto
   for (const k of ['voice', 'voiceDial']) if (job[k] && !/^es_ES-/.test(job[k])) job[k] = k === 'voice' ? Voice.defaultVoice : '';
   conv = { book, cancel: false };
-  const dh0 = await dirOf(book); if (dh0) { try { await dirReady(true, dh0); } catch (e) {} }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
+  const dh0 = await dirOf(book);
+  if (dh0) { try { await dirReady(true, dh0); } catch (e) {} if (!(await dirReady(false, dh0))) $('#convPerm').hidden = false; }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
   resumeHidden = false; renderResume();
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
@@ -1086,8 +1095,9 @@ async function runJob(book) {
       const trk = { name: ch.title, duration: out.seconds, key, ch: ci };
       book.tracks.splice(at, 0, trk);
       const hasDir = !!(await dirOf(book));
-      if (hasDir && !(await saveToDir(book, trk, out.blob, rank)) && !conv.warnedDir) {
-        conv.warnedDir = true; toast('No se pudo guardar en la carpeta. Más tarde usa 📁 → «Guardar ahora».', 6000);
+      if (hasDir && !(await saveToDir(book, trk, out.blob, rank))) {
+        $('#convPerm').hidden = false;   // sin permiso: el capítulo queda en la app y se copia al conceder el permiso
+        if (!conv.warnedDir) { conv.warnedDir = true; toast('Sin permiso para escribir en la carpeta. Pulsa «Permitir carpeta» en la barra de conversión.', 8000); }
       }
       if (book.finished) { book.finished = false; book.pos = { track: at, time: 0 }; }
       job.queue = job.queue.filter(x => x !== ci);
@@ -1105,7 +1115,7 @@ async function runJob(book) {
     if (job.queue.length) setTimeout(() => toast(`Quedan ${job.queue.length} capítulo(s) sin convertir. Pulsa «Continuar» en el libro para seguir.`, 8000), 7500);
   } finally {
     if (waitNext) { waitNext = false; toast('La conversión ha terminado. Pulsa ▶ para seguir con lo que haya.', 5000); }
-    conv = null; freeLock(); showConv(); renderLibrary(); renderResume(); keepAlive(false); if (cur) updateTime();
+    conv = null; freeLock(); showConv(); $('#convPerm').hidden = true; renderLibrary(); renderResume(); keepAlive(false); if (cur) updateTime();
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
   }
 }
