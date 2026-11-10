@@ -145,6 +145,7 @@ main{padding:8px 16px calc(150px + env(safe-area-inset-bottom))}
 #toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s,transform .2s}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
 </head>
 <body>
 
@@ -1023,8 +1024,40 @@ async function synthChunk(c, vid, ck, label, k, n) {
 }
 /* Convierte un capítulo entero en un único archivo. Todos los trozos son obligatorios: si uno falla, el capítulo queda pendiente.
    Devuelve null si se detiene. Los errores del codificador de audio llegan marcados con e.encoder. */
+/* Codificador MP3 (lamejs) con la misma interfaz que Voice.createSink: add(muestras, tasa), silence(segundos), finish() */
+function mp3Sink() {
+  const OUT = 44100, enc = new lamejs.Mp3Encoder(1, OUT, 64), parts = [];
+  let total = 0;
+  const toFloat = s => s instanceof Float32Array ? s : Float32Array.from(s, v => v);
+  const resample = (s, rate) => {
+    if (rate === OUT) return s;
+    const n = Math.round(s.length * OUT / rate), o = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = i * rate / OUT, i0 = Math.floor(x), i1 = Math.min(i0 + 1, s.length - 1), t = x - i0;
+      o[i] = s[i0] * (1 - t) + s[i1] * t;
+    }
+    return o;
+  };
+  const push = f => {
+    const b = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) b[i] = Math.max(-32768, Math.min(32767, Math.round(f[i] * 32767)));
+    const m = enc.encodeBuffer(b);
+    if (m.length) parts.push(m);
+    total += f.length;
+  };
+  return {
+    async add(samples, rate) { push(resample(toFloat(samples), rate)); },
+    async silence(sec) { push(new Float32Array(Math.round((sec || 0) * OUT))); },
+    async finish() {
+      const m = enc.flush();
+      if (m.length) parts.push(m);
+      return { blob: new Blob(parts, { type: 'audio/mpeg' }), seconds: total / OUT };
+    }
+  };
+}
 async function convertChapter(book, chunks, ci, ch, job, made, label, forceWav) {
-  const sink = await Voice.createSink(!forceWav);
+  // MP3 (64 kbps) con lamejs; si la librería no carga o el codificador falla, se usa el sistema anterior (Opus/WAV)
+  const sink = (!forceWav && typeof lamejs !== 'undefined') ? mp3Sink() : await Voice.createSink(!forceWav);
   const cacheKeys = [];
   const enc = async f => { try { return await f(); } catch (e) { e.encoder = true; throw e; } };
   for (let k = 0; k < chunks.length; k++) {
@@ -1077,7 +1110,7 @@ async function runJob(book) {
       const rank = Math.max(0, job.all.findIndex(a => a.i === ci)) + 1;
       const label = `Capítulo ${rank} de ${job.all.length}`;
       let res;
-      try { res = await convertChapter(book, chunks, ci, ch, job, made, label, false); }
+      try { res = await convertChapter(book, chunks, ci, ch, job, made, label, !new Audio().canPlayType('audio/ogg; codecs="opus"')); }   // si el navegador no reproduce Ogg/Opus (p. ej. Safari/iOS), se usa WAV desde el principio
       catch (e) {
         // el codificador Opus ha fallado: se repite el capítulo en WAV (los trozos ya generados están en caché)
         if (conv.cancel || !e.encoder) throw e;
