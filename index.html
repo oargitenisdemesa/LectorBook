@@ -1084,7 +1084,8 @@ async function runJob(book) {
   for (const k of ['voice', 'voiceDial']) if (job[k] && !/^es_ES-/.test(job[k])) job[k] = k === 'voice' ? Voice.defaultVoice : '';
   conv = { book, cancel: false };
   const dh0 = await dirOf(book);
-  if (dh0) { try { await dirReady(true, dh0); } catch (e) {} if (!(await dirReady(false, dh0))) $('#convPerm').hidden = false; }   // pide permiso sobre la carpeta mientras aún hay un toque reciente
+  // Solo comprueba el permiso, sin pedirlo: pedirlo aquí haría que el aviso salga en cada reinicio o reanudación automática
+  if (dh0 && !(await dirReady(false, dh0))) $('#convPerm').hidden = false;
   resumeHidden = false; renderResume();
   showConv('Preparando…', 0); renderLibrary();
   await keepAwake();
